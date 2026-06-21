@@ -8,6 +8,8 @@
     "postinstall": "git config core.hooksPath .hooks",
     "test": "c8 node --test",
     "check": "tsc --noEmit",
+    "build:types": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build:types",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -73,12 +75,22 @@
     "security"
   ],
   "exports": {
-    ".": "./src/index.mjs",
-    "./invisible": "./src/invisible.mjs",
-    "./html": "./src/html.mjs"
+    ".": {
+      "types": "./types/index.d.mts",
+      "default": "./src/index.mjs"
+    },
+    "./invisible": {
+      "types": "./types/invisible.d.mts",
+      "default": "./src/invisible.mjs"
+    },
+    "./html": {
+      "types": "./types/html.d.mts",
+      "default": "./src/html.mjs"
+    }
   },
   "files": [
     "src",
+    "types",
     "LICENSE",
     "README.md",
     "THREAT-MODEL.md"

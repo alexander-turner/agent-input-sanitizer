@@ -8,6 +8,7 @@ export default tseslint.config(
   {
     ignores: [
       "coverage/**",
+      "types/**",
       "node_modules/**",
       ".github/**",
       ".claude/**",

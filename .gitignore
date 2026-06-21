@@ -10,6 +10,7 @@ pnpm-lock.yaml
 dist/
 build/
 out/
+types/
 
 # Environment files
 .env

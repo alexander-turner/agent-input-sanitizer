@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+types/
 
 # Package manager
 pnpm-lock.yaml

@@ -1,0 +1,13 @@
+{
+  // Emit-only config: produce .d.mts declarations from the JSDoc-typed source
+  // so consumers get types without shipping any compiled JS (the runtime is the
+  // .mjs source itself). Type-checking still runs via the root tsconfig (`check`).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "types"
+  }
+}
