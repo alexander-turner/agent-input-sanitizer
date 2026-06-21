@@ -1,0 +1,442 @@
+/**
+ * Unit + property tests for the zero-dependency invisible-char core.
+ * Driven from the SSOT lists (CHECKS, BLANK_NON_CF, VS, LINGUISTIC_SCRIPTS) so
+ * a dropped/added enumerated member surfaces as a failing or non-compiling
+ * test, not merely a coverage gap.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import fc from "fast-check";
+
+import {
+  stripInvisible,
+  stripInvisibleWithReport,
+  isSgrOnly,
+  STRIP,
+  SGR_RE,
+  CHECKS,
+  VS,
+  BLANK_NON_CF,
+  LONG_RUN_RE,
+  LONG_RUN_THRESHOLD,
+  SCATTERED_THRESHOLD,
+  LINGUISTIC_SCRIPTS,
+} from "../src/invisible.mjs";
+import { fcRunOptions, cp } from "./test-helpers.mjs";
+
+const ZWNJ = cp(0x200c);
+const ZWJ = cp(0x200d);
+
+// ─── stripInvisible: core classes ────────────────────────────────────────────
+
+describe("stripInvisible: core classes", () => {
+  for (const [name, input, expected] of [
+    [
+      "preserves single leading BOM, strips interior BOM + soft hyphen",
+      `${cp(0xfeff)}a${cp(0xfeff)}b${cp(0x00ad)}c`,
+      `${cp(0xfeff)}abc`,
+    ],
+    [
+      "strips a leading soft hyphen entirely (no BOM branch)",
+      `${cp(0x00ad)}abc`,
+      "abc",
+    ],
+    [
+      "strips a run of soft hyphens",
+      `mal${cp(0x00ad).repeat(3)}ware`,
+      "malware",
+    ],
+    ["returns empty string unchanged", "", ""],
+    // Guards the VS set against a build that folds to a string of literal ASCII
+    // (e.g. "undefined"): that would turn the char class into {u,n,d,e,f,i} and
+    // start eating ordinary prose.
+    [
+      "leaves benign ASCII prose untouched",
+      "defined unfixed key",
+      "defined unfixed key",
+    ],
+  ]) {
+    it(name, () => assert.equal(stripInvisible(input), expected));
+  }
+
+  // BLANK_NON_CF: one entry per member so dropping any member surfaces as a
+  // failing test (100% line coverage fires the whole char class on a single
+  // match — a dropped member is invisible to coverage alone).
+  for (const ch of BLANK_NON_CF) {
+    const hex = ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+    it(`strips blank-rendering filler U+${hex} (non-Cf)`, () => {
+      const { cleaned, found } = stripInvisibleWithReport(`a${ch}b`);
+      assert.equal(cleaned, "ab");
+      assert.deepEqual(found, ["Blank-rendering fillers"]);
+    });
+  }
+
+  // Variation selectors are not category Cf, so the dedicated VS set — not
+  // \p{Cf} — must catch them. Pin each sub-range's first, a mid entry, and last
+  // so a truncated or off-by-one range survives in the output.
+  for (const codePoint of [0xfe00, 0xfe0f, 0xe0100, 0xe0101, 0xe01ef]) {
+    const hex = codePoint.toString(16).toUpperCase();
+    it(`strips variation selector U+${hex}`, () => {
+      const { cleaned, found } = stripInvisibleWithReport(`a${cp(codePoint)}b`);
+      assert.equal(cleaned, "ab");
+      assert.deepEqual(found, ["Variation selectors"]);
+    });
+  }
+
+  it("preserves a single leading BOM with nothing else to strip", () => {
+    const input = `${cp(0xfeff)}clean leading bom`;
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, input);
+    assert.deepEqual(found, []);
+  });
+
+  // One case per CHECKS category: the label reported must name exactly that
+  // category. Drives from the SSOT so a renamed/dropped category fails here.
+  const categorySample = {
+    "Format chars (Cf)": cp(0x200b), // ZWSP
+    "Variation selectors": cp(0xfe0f),
+    "Blank-rendering fillers": cp(0x3164),
+  };
+  for (const [label] of CHECKS) {
+    it(`reports the "${label}" category by its label`, () => {
+      const sample = categorySample[label];
+      assert.ok(sample, `no sample wired for CHECKS category "${label}"`);
+      const { cleaned, found } = stripInvisibleWithReport(`x${sample}y`);
+      assert.equal(cleaned, "xy");
+      assert.deepEqual(found, [label]);
+    });
+  }
+});
+
+// ─── ZWNJ/ZWJ linguistic carve-out ───────────────────────────────────────────
+// "می‌خ" — ZWNJ between Arabic letters (Persian).
+const PERSIAN = cp(0x645) + cp(0x6cc) + ZWNJ + cp(0x62e);
+// "क्‍ष" — ZWJ between Devanagari virama and consonant.
+const DEVANAGARI = cp(0x915) + cp(0x94d) + ZWJ + cp(0x937);
+// 👨‍👩‍👧‍👦 — a four-person family emoji ZWJ sequence (no variation selectors).
+const FAMILY =
+  cp(0x1f468) + ZWJ + cp(0x1f469) + ZWJ + cp(0x1f467) + ZWJ + cp(0x1f466);
+
+// Two representative letters per script for the carve-out preserve test.
+const SCRIPT_LETTERS = {
+  Arabic: [0x645, 0x62e],
+  Devanagari: [0x915, 0x937],
+  Bengali: [0x995, 0x99a],
+  Gurmukhi: [0x0a15, 0x0a17],
+  Gujarati: [0x0a95, 0x0a97],
+  Oriya: [0x0b15, 0x0b17],
+  Tamil: [0x0b95, 0x0b99],
+  Telugu: [0x0c15, 0x0c17],
+  Kannada: [0x0c95, 0x0c97],
+  Malayalam: [0x0d15, 0x0d17],
+  Sinhala: [0x0d9a, 0x0d9c],
+};
+
+describe("stripInvisible: ZWNJ/ZWJ linguistic carve-out", () => {
+  for (const [name, sample, joinerAt] of [
+    ["Persian ZWNJ between Arabic letters", PERSIAN, 2],
+    ["Devanagari ZWJ between letters", DEVANAGARI, 2],
+    ["emoji ZWJ family sequence", FAMILY, 2],
+  ]) {
+    it(`preserves ${name} unchanged`, () => {
+      const { cleaned, found } = stripInvisibleWithReport(sample);
+      assert.equal(cleaned, sample);
+      assert.deepEqual(found, []);
+      const code = cleaned.codePointAt(joinerAt);
+      assert.ok(
+        code === 0x200c || code === 0x200d,
+        `join control gone: U+${code.toString(16)}`,
+      );
+    });
+  }
+
+  // Drive one preserve-case per script in LINGUISTIC_SCRIPTS (both joiners):
+  // line coverage hits the whole character class on a single match (Arabic),
+  // leaving the others unverified, so iterate the SSOT — a script added without
+  // a representative-letter mapping throws here.
+  for (const script of LINGUISTIC_SCRIPTS) {
+    const letters = SCRIPT_LETTERS[script];
+    assert.ok(
+      letters,
+      `no representative letters wired for script "${script}"`,
+    );
+    for (const joiner of [ZWNJ, ZWJ]) {
+      const label = joiner === ZWNJ ? "ZWNJ" : "ZWJ";
+      it(`preserves a ${label} between two ${script} letters`, () => {
+        const sample = cp(letters[0]) + joiner + cp(letters[1]);
+        const { cleaned, found } = stripInvisibleWithReport(sample);
+        assert.equal(cleaned, sample);
+        assert.deepEqual(found, []);
+      });
+    }
+  }
+
+  it("preserves a carve-out joiner after a leading BOM", () => {
+    const { cleaned, found } = stripInvisibleWithReport(cp(0xfeff) + PERSIAN);
+    assert.equal(cleaned, cp(0xfeff) + PERSIAN);
+    assert.deepEqual(found, []);
+  });
+
+  it("preserves a skin-tone + ZWJ + component emoji sequence", () => {
+    // 👨🏻‍🦰 = man + skin-tone modifier + ZWJ + red-hair component: the ZWJ has a
+    // modifier on its left and a pictograph component on its right.
+    const redHair = cp(0x1f468) + cp(0x1f3fb) + ZWJ + cp(0x1f9b0);
+    const { cleaned, found } = stripInvisibleWithReport(redHair);
+    assert.equal(cleaned, redHair);
+    assert.deepEqual(found, []);
+  });
+
+  // Payload contexts: each is still stripped AND reported in `found`.
+  for (const [name, input, expected] of [
+    ["ZWNJ between Latin", `a${ZWNJ}b`, "ab"],
+    ["ZWJ between Latin (no emoji on the left)", `a${ZWJ}b`, "ab"],
+    [
+      "ZWNJ with an Arabic left but a Latin right",
+      `${cp(0x645)}${ZWNJ}x`,
+      `${cp(0x645)}x`,
+    ],
+    [
+      "leading ZWNJ before an Arabic letter",
+      `${ZWNJ}${cp(0x645)}${cp(0x6cc)}`,
+      `${cp(0x645)}${cp(0x6cc)}`,
+    ],
+    [
+      "trailing ZWNJ after an Arabic letter",
+      `${cp(0x645)}${cp(0x6cc)}${ZWNJ}`,
+      `${cp(0x645)}${cp(0x6cc)}`,
+    ],
+    [
+      "ZWJ with an emoji left but a non-emoji right",
+      `${cp(0x1f468)}${ZWJ}x`,
+      `${cp(0x1f468)}x`,
+    ],
+    [
+      "ZWNJ between two emoji (ZWNJ never joins emoji)",
+      `${cp(0x1f468)}${ZWNJ}${cp(0x1f469)}`,
+      `${cp(0x1f468)}${cp(0x1f469)}`,
+    ],
+    [
+      "a long ZWJ run between Arabic letters",
+      `${cp(0x645)}${ZWJ.repeat(12)}${cp(0x62e)}`,
+      `${cp(0x645)}${cp(0x62e)}`,
+    ],
+  ]) {
+    it(`strips ${name} and reports it`, () => {
+      const { cleaned, found } = stripInvisibleWithReport(input);
+      assert.equal(cleaned, expected);
+      assert.deepEqual(found, ["Format chars (Cf)"]);
+    });
+  }
+
+  // The scatter floor (SCATTERED_THRESHOLD = 30) is the boundary: 29 invisibles
+  // keep the carve-out enabled, 30 disable it wholesale. Both sides are pinned
+  // so a `<`→`<=`/`>` mutant can't survive.
+  it(`keeps legit joiners just under the scatter floor (${SCATTERED_THRESHOLD - 1})`, () => {
+    const input =
+      (cp(0x645) + ZWNJ).repeat(SCATTERED_THRESHOLD - 1) + cp(0x62e);
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, input);
+    assert.deepEqual(found, []);
+  });
+
+  it("strips ALL joiners once the scatter floor is reached, even legit ones", () => {
+    const input = (cp(0x645) + ZWNJ).repeat(SCATTERED_THRESHOLD) + cp(0x62e);
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, cp(0x645).repeat(SCATTERED_THRESHOLD) + cp(0x62e));
+    assert.deepEqual(found, ["Format chars (Cf)"]);
+  });
+
+  it("counts EVERY invisible class toward the floor, not just joiners", () => {
+    // 29 variation selectors + 1 ZWNJ = 30 total invisibles: the floor counts
+    // all STRIP classes, so even an otherwise-legit Arabic ZWNJ is stripped.
+    const input =
+      cp(0xfe0f).repeat(SCATTERED_THRESHOLD - 1) + cp(0x645) + ZWNJ + cp(0x62e);
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, cp(0x645) + cp(0x62e));
+    assert.deepEqual(found, ["Format chars (Cf)", "Variation selectors"]);
+  });
+
+  it("keeps a legit joiner while stripping every other invisible class", () => {
+    // Carve path (a joiner is present) must still strip the non-joiner classes —
+    // a stray ZWSP (Cf), a variation selector, and a Hangul blank filler — and
+    // report each category, while the Persian ZWNJ survives.
+    const input =
+      PERSIAN +
+      cp(0x200b) + // ZWSP (Cf)
+      `a${cp(0xfe0f)}b` + // VS-16
+      `c${cp(0x3164)}d`; // Hangul filler
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, PERSIAN + "abcd");
+    assert.deepEqual(found, [
+      "Format chars (Cf)",
+      "Variation selectors",
+      "Blank-rendering fillers",
+    ]);
+  });
+});
+
+// ─── isSgrOnly / SGR_RE ──────────────────────────────────────────────────────
+
+describe("isSgrOnly", () => {
+  it("is true when every ESC belongs to an SGR color sequence", () => {
+    assert.equal(isSgrOnly(`${cp(0x1b)}[32mhello${cp(0x1b)}[0m`), true);
+  });
+  it("is true for text with no ESC at all", () =>
+    assert.equal(isSgrOnly("plain text"), true));
+  it("is false when a non-SGR escape (cursor move) is present", () =>
+    assert.equal(isSgrOnly(`${cp(0x1b)}[2J`), false));
+  it("is false for a lone/partial escape", () =>
+    assert.equal(isSgrOnly(`${cp(0x1b)}[`), false));
+  it("SGR_RE matches a color sequence", () =>
+    assert.equal(`${cp(0x1b)}[31mx`.replace(SGR_RE, ""), "x"));
+});
+
+// ─── LONG_RUN_RE ─────────────────────────────────────────────────────────────
+
+describe("LONG_RUN_RE", () => {
+  it(`matches a run of exactly LONG_RUN_THRESHOLD (${LONG_RUN_THRESHOLD}) invisibles`, () => {
+    LONG_RUN_RE.lastIndex = 0;
+    assert.equal(LONG_RUN_RE.test(cp(0x200b).repeat(LONG_RUN_THRESHOLD)), true);
+  });
+  it("does not match a run one short of the threshold", () => {
+    LONG_RUN_RE.lastIndex = 0;
+    assert.equal(
+      LONG_RUN_RE.test(cp(0x200b).repeat(LONG_RUN_THRESHOLD - 1)),
+      false,
+    );
+  });
+});
+
+// ─── Property tests over the real input domain ───────────────────────────────
+
+// Any single code point except the surrogate range (so .map(fromCodePoint)
+// never throws); lone surrogates are injected separately.
+const unicodeChar = fc
+  .integer({ min: 0, max: 0x10ffff })
+  .filter((c) => c < 0xd800 || c > 0xdfff)
+  .map((c) => String.fromCodePoint(c));
+const loneSurrogate = fc
+  .integer({ min: 0xd800, max: 0xdfff })
+  .map((c) => String.fromCharCode(c));
+// Every invisible class, joiner-using script letters, emoji parts, ASCII.
+const invisibleChar = fc.constantFrom(
+  ...Array.from(BLANK_NON_CF),
+  ...Array.from(VS),
+  cp(0x200b),
+  cp(0x200c),
+  cp(0x200d),
+  cp(0x00ad),
+  cp(0xfeff),
+  cp(0x2060),
+);
+const scriptChar = fc.constantFrom(
+  cp(0x645),
+  cp(0x62e),
+  cp(0x915),
+  cp(0x937),
+  cp(0x1f468),
+  cp(0x1f469),
+  cp(0x1f3fb),
+  "a",
+  "Z",
+  " ",
+);
+const adversarialChar = fc.oneof(
+  unicodeChar,
+  loneSurrogate,
+  invisibleChar,
+  scriptChar,
+);
+const adversarialText = fc
+  .array(adversarialChar, { maxLength: 80 })
+  .map((parts) => parts.join(""));
+
+describe("property: stripInvisible invariants", () => {
+  it("never throws on lone surrogates / astral input", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        assert.equal(typeof stripInvisible(text), "string");
+      }),
+      fcRunOptions(),
+    );
+  });
+
+  it("is idempotent: strip(strip(x)) === strip(x)", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        const once = stripInvisible(text);
+        assert.equal(stripInvisible(once), once);
+      }),
+      fcRunOptions(),
+    );
+  });
+
+  it("output is a subsequence of the input (deletion only)", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        // Compared at the UTF-16 code-UNIT level, not code points: deleting a
+        // char between two lone surrogates can join them into a valid astral
+        // pair, so the property holds per code unit but not per code point.
+        const out = stripInvisible(text);
+        let i = 0;
+        for (let k = 0; k < out.length; k++) {
+          const unit = out.charCodeAt(k);
+          while (i < text.length && text.charCodeAt(i) !== unit) i++;
+          assert.ok(i < text.length, "output not a subsequence of input");
+          i++;
+        }
+      }),
+      fcRunOptions(),
+    );
+  });
+
+  it("`found` is exactly the set of categories that actually changed the text", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        const { cleaned, found } = stripInvisibleWithReport(text);
+        // Every reported category must really be a CHECKS label.
+        const labels = new Set(CHECKS.map(([label]) => label));
+        for (const f of found) assert.ok(labels.has(f), `bogus label: ${f}`);
+        // found non-empty ⇔ the text changed (a strip happened). A preserved
+        // joiner leaves text === cleaned AND found empty.
+        assert.equal(found.length > 0, cleaned !== text);
+      }),
+      fcRunOptions(),
+    );
+  });
+
+  it("a BOM is preserved only when leading", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        const cleaned = stripInvisible(text);
+        const hadLeadingBom = text.charCodeAt(0) === 0xfeff;
+        // No interior BOM ever survives.
+        const interior = cleaned.slice(1);
+        assert.ok(!interior.includes(cp(0xfeff)), "interior BOM survived");
+        // A leading BOM survives iff the input led with one.
+        assert.equal(cleaned.charCodeAt(0) === 0xfeff, hadLeadingBom);
+      }),
+      fcRunOptions(),
+    );
+  });
+
+  it("STRIP-matchable chars are gone unless preserved by the carve-out", () => {
+    fc.assert(
+      fc.property(adversarialText, (text) => {
+        const cleaned = stripInvisible(text);
+        // After stripping, the only STRIP-class chars left must be ZWNJ/ZWJ
+        // (carve-out) or a single leading BOM.
+        for (let i = 0; i < cleaned.length; i++) {
+          const ch = cleaned[i];
+          STRIP.lastIndex = 0;
+          if (!STRIP.test(ch)) continue;
+          const code = cleaned.codePointAt(i);
+          const ok =
+            code === 0x200c || code === 0x200d || (code === 0xfeff && i === 0);
+          assert.ok(ok, `unexpected residual invisible U+${code.toString(16)}`);
+        }
+      }),
+      fcRunOptions(),
+    );
+  });
+});
