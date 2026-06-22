@@ -1,7 +1,7 @@
 # Threat model
 
-`llm-text-sanitizer` defends the boundary where untrusted text enters an
-LLM-driven pipeline (agent tool output, RAG retrieval, fetched web pages). It is
+`agent-input-sanitizer` defends the boundary where untrusted text enters an
+agent-driven pipeline (agent tool output, RAG retrieval, fetched web pages). It is
 a detect/neutralize layer, not an enforcement boundary: it makes hidden content
 visible-or-gone and surfaces exfil-shaped URLs, so the model and the operator
 see the same thing. Egress controls remain your enforcement layer.

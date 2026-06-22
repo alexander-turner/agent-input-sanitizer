@@ -1,6 +1,6 @@
-# llm-text-sanitizer
+# agent-input-sanitizer
 
-Defend an LLM against hidden-content injection. This library sanitizes untrusted
+Defend an agent against hidden-content injection. This library sanitizes untrusted
 text **before any model sees it**—in an agent, RAG, or tool-use pipeline. It
 has nothing to do with any particular model or provider: it cleans bytes.
 
@@ -52,7 +52,7 @@ See [THREAT-MODEL.md](./THREAT-MODEL.md) for the per-vector detail.
 ## Install
 
 ```sh
-npm install llm-text-sanitizer
+npm install agent-input-sanitizer
 ```
 
 Node ≥ 20. ESM only.
@@ -62,7 +62,7 @@ Node ≥ 20. ESM only.
 ### 1. The convenience function
 
 ```js
-import { sanitize } from "llm-text-sanitizer";
+import { sanitize } from "agent-input-sanitizer";
 
 // Layer 1 only (invisible chars + ANSI), always synchronous work, no heavy deps:
 const { cleaned, found, warnings } = await sanitize(untrustedText);
@@ -83,7 +83,7 @@ is accompanied by at least one entry in `warnings`.
 import {
   stripInvisible,
   stripInvisibleWithReport,
-} from "llm-text-sanitizer/invisible";
+} from "agent-input-sanitizer/invisible";
 
 stripInvisible(text); // -> cleaned string
 const { cleaned, found } = stripInvisibleWithReport(text);
@@ -99,7 +99,7 @@ import {
   sanitizeHtml,
   detectExfil,
   checkExfilUrl,
-} from "llm-text-sanitizer/html";
+} from "agent-input-sanitizer/html";
 
 const layer2 = sanitizeHtml(pageSource); // null when nothing to strip/report
 const threats = detectExfil(pageSource); // null or [{ isImage, reason, target }]
@@ -109,22 +109,22 @@ const reason = checkExfilUrl(oneUrl); // null or a string reason
 > **The HTML entry is heavier—import it only when you need it.** It pulls in
 > the unified/remark/rehype graph (~200 ms of module-load time). The convenience
 > `sanitize` lazy-loads it only on the `{ html: true }` path, so a Layer-1-only
-> caller never pays for it. If you import from `llm-text-sanitizer/html`
+> caller never pays for it. If you import from `agent-input-sanitizer/html`
 > directly, you take that cost at import time.
 
 ## Public surface
 
-`llm-text-sanitizer` (main)—`sanitize`, everything re-exported from
+`agent-input-sanitizer` (main)—`sanitize`, everything re-exported from
 `./invisible`, and the cheap Layer 2/3 pre-gates `HTML_TAG_PRESENT`,
 `MD_LINK_HINT`, `SECRET_HINT`, `SECRET_HINT_EXT`, `matchesSecretHint` (these are
 dependency-free, so re-exporting them never pulls in the heavy HTML graph).
 
-`llm-text-sanitizer/invisible` — `stripInvisible`, `stripInvisibleWithReport`,
+`agent-input-sanitizer/invisible` — `stripInvisible`, `stripInvisibleWithReport`,
 `isSgrOnly`, and the constants `STRIP`, `SGR_RE`, `CHECKS`, `VS`,
 `BLANK_NON_CF`, `LONG_RUN_RE`, `LONG_RUN_THRESHOLD`, `SCATTERED_THRESHOLD`,
 `LINGUISTIC_SCRIPTS`.
 
-`llm-text-sanitizer/html` — `sanitizeHtml`, `scanHtmlFragment`,
+`agent-input-sanitizer/html` — `sanitizeHtml`, `scanHtmlFragment`,
 `looksLikeHtmlSource`, `spliceRanges`, `isHiddenStyle`, `isHiddenElement`,
 `isHiddenOpen`, `closingTagName`, `detectExfil`, `checkExfilUrl`, `urlHost`, the
 constants `REPORTED_TAGS`, `COMMENT_PLACEHOLDER`, `HIDDEN_PLACEHOLDER`,
