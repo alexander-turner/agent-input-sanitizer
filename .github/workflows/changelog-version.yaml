@@ -1,9 +1,9 @@
 name: Changelog version guard
 
 # A package.json version bump must ship with its CHANGELOG.md `## [version]`
-# section in the same change. The post-merge tag-release job already enforces
-# this, but only AFTER pushing the immutable vX.Y.Z tag — too late to fix
-# cleanly. This guard moves that failure pre-merge.
+# section in the same change. The post-merge version-update job already enforces
+# this, but only AFTER the GitHub Release (and its immutable tag) is published —
+# too late to fix cleanly. This guard moves that failure pre-merge.
 
 on:
   push:

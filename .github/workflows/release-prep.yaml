@@ -4,7 +4,7 @@ name: Release prep (pre-merge version bump)
 # a conservative semver bump (patch or minor — never major) and commit the
 # package.json bump + assembled CHANGELOG roll onto the PR branch. The bump then merges
 # as part of the PR, so main's latest commit stays the real merge/squash commit.
-# The matching vX.Y.Z tag is created post-merge by tag-release.yaml.
+# The matching GitHub Release (and its tag) is published post-merge by version-update.yaml.
 
 on:
   pull_request:

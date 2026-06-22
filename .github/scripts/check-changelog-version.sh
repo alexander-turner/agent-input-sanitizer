@@ -6,8 +6,8 @@
 # package.json AND rolls the pending changelog.d/ fragments into a
 # `## [version]` section in one commit, so the two never drift. A hand-written
 # bump that skips that step leaves CHANGELOG.md without the section; that only
-# surfaces post-merge in tag-release.sh — AFTER the immutable vX.Y.Z tag is
-# already pushed, where it is no longer cleanly fixable. This check moves the
+# surfaces post-merge in version-update.sh — AFTER the GitHub Release (and its
+# tag) is already published, where it is no longer cleanly fixable. This check moves the
 # failure pre-merge by failing loudly the moment the version moves without a
 # matching changelog section.
 set -euo pipefail
@@ -24,7 +24,7 @@ fi
 # Resolve the baseline version to diff against. On a PR, BASE_SHA is the merge
 # target commit (already in history under `fetch-depth: 0`, so no network or
 # credentials); on a push, fall back to the previous commit (mirrors
-# tag-release.sh). With no baseline (e.g. the repo's first commit), there is no
+# version-update.sh). With no baseline (e.g. the repo's first commit), there is no
 # bump to guard, so the section is not yet required.
 if [[ -n "${BASE_SHA:-}" ]]; then
   BASE_VERSION=$(git show "$BASE_SHA:package.json" | read_version)

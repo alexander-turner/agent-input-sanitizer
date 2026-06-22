@@ -4,7 +4,8 @@
 # major), then bump package.json and roll the assembled CHANGELOG on the PR branch
 # and push that commit. Because the bump rides in on the PR, main's latest commit
 # stays the real merge/squash commit — no post-merge release commit, no
-# force-push. The matching vX.Y.Z tag is created post-merge by tag-release.sh.
+# force-push. The matching GitHub Release (and its tag) is published post-merge
+# by version-update.sh.
 #
 # Conservative by design:
 #   * Bumps only when there are pending changelog.d/ fragments to release.
