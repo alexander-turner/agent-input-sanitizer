@@ -3,6 +3,14 @@
   "version": "1.0.1",
   "description": "Defend an agent against hidden-content injection: strip payload-capable invisible Unicode and ANSI, splice out human-invisible HTML, and flag data-exfil URLs in untrusted text before any model sees it.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexander-turner/agent-input-sanitizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexander-turner/agent-input-sanitizer/issues"
+  },
+  "homepage": "https://github.com/alexander-turner/agent-input-sanitizer#readme",
   "packageManager": "pnpm@11.8.0",
   "scripts": {
     "postinstall": "git config core.hooksPath .hooks",
