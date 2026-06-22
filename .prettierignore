@@ -21,3 +21,7 @@ uv.lock
 
 # Coverage
 coverage/
+
+# Machine-assembled by scripts/assemble-changelog.mjs — keep its exact ASCII
+# `## [x.y.z] - date` formatting; punctilio would rewrite the hyphen and dashes.
+CHANGELOG.md
