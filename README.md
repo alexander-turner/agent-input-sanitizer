@@ -20,13 +20,9 @@ dependency stays opt-in:
 
 See [THREAT-MODEL.md](./THREAT-MODEL.md) for per-vector detail.
 
-## Install
-
 ```sh
 npm install agent-input-sanitizer
 ```
-
-Node ≥ 20. ESM only.
 
 ## Usage
 
@@ -79,7 +75,3 @@ const cleaned = sanitizeHtml(pageSource); // null when nothing to strip/report
 const threats = detectExfil(pageSource); // null or [{ isImage, reason, target }]
 const reason = checkExfilUrl(oneUrl); // null or a string reason
 ```
-
-## License
-
-[Apache-2.0](./LICENSE)
