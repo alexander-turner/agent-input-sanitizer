@@ -8,6 +8,8 @@ on:
       - "**/*.tsx"
       - "**/*.js"
       - "**/*.jsx"
+      - "**/*.mjs"
+      - "**/*.cjs"
       - "package.json"
       - ".github/workflows/lint.yaml"
   pull_request:
@@ -16,6 +18,8 @@ on:
       - "**/*.tsx"
       - "**/*.js"
       - "**/*.jsx"
+      - "**/*.mjs"
+      - "**/*.cjs"
       - "package.json"
       - ".github/workflows/lint.yaml"
 
