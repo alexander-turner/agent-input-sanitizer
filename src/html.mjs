@@ -24,50 +24,24 @@ import remarkGfm from "remark-gfm";
 import rehypeParse from "rehype-parse";
 import { visit, SKIP, EXIT } from "unist-util-visit";
 import styleToObject from "style-to-object";
+import {
+  HTML_TAG_PRESENT,
+  MD_LINK_HINT,
+  SECRET_HINT,
+  SECRET_HINT_EXT,
+  matchesSecretHint,
+} from "./gates.mjs";
 
-// ─── Cheap pre-gates ─────────────────────────────────────────────────────────
-
-/**
- * Matches any HTML tag-like construct: opening tags, closing tags (`</`),
- * comments (`<!`), and fragments with attributes. Gate for Layer 2 (HTML
- * sanitization) and the HTML img/a exfil path in Layer 3.
- */
-const HTML_TAG_PRESENT = /<[a-zA-Z/!][^<>]*>/;
-
-/**
- * Matches markdown link/image syntax (`](`, `![`) and reference link
- * definitions (`[label]: url` at line start). Gate for Layer 3 (markdown
- * exfiltration detection).
- */
-const MD_LINK_HINT = /\]\(|!\[|^[ \t]*\[[^[\]\n]+\]:\s/m;
-
-// ─── Secret-shape pre-gate (Layer 3 URL-param reuse) ─────────────────────────
-// Cheap shape match that decides whether a URL parameter value carries a
-// credential (Layer 3). Split across TWO regexes, combined by matchesSecretHint:
-// one alternation of every arm makes a redos analyzer see cross-arm polynomial
-// backtracking (each arm is linear alone, but the union was a 3rd-degree
-// polynomial on a long alnum run). Testing two independently-safe literals with
-// || is linear and keeps each under the analyzer's bar. The `(?<!...)`
-// lookbehinds on the EXT run-matching arms pin them to a token boundary so they
-// can't be retried at every offset; the atlasv1 arm in SECRET_HINT does the same.
-const SECRET_HINT =
-  /secret|token|password|passwd|pwd|bearer|credential|authorization|contrase[nñ]a|-----BEGIN|(?:api|auth|service|account|db|database|priv|private|client|access)[_-]?key|(?:db|database|key)[_-]?pass|(?:A3T|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]|github_pat_|gl[a-z]{2,12}-[0-9A-Za-z_-]{20}|sk-ant-|AIza[0-9A-Za-z_-]{35}|sk_live_|sk_test_|rk_live_|rk_test_|xox[bpasr]-|eyJ[A-Za-z0-9]|do[opr]_v1_[a-f0-9]{16}|v1\.0-[a-f0-9]{24}-|hv[sb]\.[A-Za-z0-9_-]{20}|(?<![a-z0-9])[a-z0-9]{14}\.atlasv1\.|sk-or-v1-[0-9a-f]{16}|gsk_[A-Za-z0-9]{16}|xai-[A-Za-z0-9]{16}|r8_[A-Za-z0-9]{16}/i;
-
-// Second alternation (see SECRET_HINT): kept a separate literal so a redos
-// analyzer vets each alternation in isolation.
-const SECRET_HINT_EXT =
-  /(?:AC|SK)[a-z0-9]{32}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}|sq0csp-[0-9A-Za-z_-]{43}|(?<![0-9])[0-9]{8,10}:[0-9A-Za-z_-]{35}|(?<![0-9a-z])[0-9a-z]{32}-us[0-9]{1,2}|(?<![A-Za-z0-9_-])[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}|T3BlbkFJ|pypi-AgE|(?<![A-Za-z0-9])AKC[A-Za-z0-9]{10}|(?<![A-Za-z0-9])AP[0-9A-Fa-f][A-Za-z0-9]{8}|:\/\/[^\s:/@]{1,64}:[^\s:/@]{1,64}@|(?:key|pw|pass)["']?[\s:=>]+["']?[A-Za-z0-9_/+-]{20}/i;
-
-/**
- * True when either pre-gate alternation shape-matches `text`. Split into two
- * literals (see SECRET_HINT) and OR'd so neither grows into a
- * polynomial-backtracking shape.
- * @param {string} text
- * @returns {boolean}
- */
-function matchesSecretHint(text) {
-  return SECRET_HINT.test(text) || SECRET_HINT_EXT.test(text);
-}
+// The cheap pre-gates live in the dependency-free `./gates.mjs` so the package
+// root can re-export them without eagerly loading this module's remark/rehype
+// graph. Re-exported here too so the `./html` subpath keeps exposing them.
+export {
+  HTML_TAG_PRESENT,
+  MD_LINK_HINT,
+  SECRET_HINT,
+  SECRET_HINT_EXT,
+  matchesSecretHint,
+};
 
 // ─── Layer 2: hidden-content detection ───────────────────────────────────────
 

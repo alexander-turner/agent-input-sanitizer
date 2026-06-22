@@ -26,6 +26,19 @@ export {
   SCATTERED_THRESHOLD,
 } from "./invisible.mjs";
 
+// Layer 2/3 cheap pre-gates. Re-exported from the dependency-free `./gates.mjs`
+// (not `./html.mjs`) so consumers can share the exact HTML-tag/markdown-link
+// hints and secret-shape pre-gate without duplicating the regexes — and without
+// pulling in the heavy remark/rehype graph that a re-export from `./html.mjs`
+// would eagerly load on every root import.
+export {
+  HTML_TAG_PRESENT,
+  MD_LINK_HINT,
+  SECRET_HINT,
+  SECRET_HINT_EXT,
+  matchesSecretHint,
+} from "./gates.mjs";
+
 // The two raw control introducers an ANSI sequence can start with: 7-bit
 // ESC (U+001B) and the 8-bit C1 CSI (U+009B). Both are category Cc, so the
 // invisible-char pass (which targets Cf / variation / blank fillers) never

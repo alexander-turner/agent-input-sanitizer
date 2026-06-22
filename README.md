@@ -114,8 +114,10 @@ const reason = checkExfilUrl(oneUrl); // null or a string reason
 
 ## Public surface
 
-`llm-text-sanitizer` (main)—`sanitize`, plus everything re-exported from
-`./invisible`.
+`llm-text-sanitizer` (main)—`sanitize`, everything re-exported from
+`./invisible`, and the cheap Layer 2/3 pre-gates `HTML_TAG_PRESENT`,
+`MD_LINK_HINT`, `SECRET_HINT`, `SECRET_HINT_EXT`, `matchesSecretHint` (these are
+dependency-free, so re-exporting them never pulls in the heavy HTML graph).
 
 `llm-text-sanitizer/invisible` — `stripInvisible`, `stripInvisibleWithReport`,
 `isSgrOnly`, and the constants `STRIP`, `SGR_RE`, `CHECKS`, `VS`,
@@ -124,9 +126,10 @@ const reason = checkExfilUrl(oneUrl); // null or a string reason
 
 `llm-text-sanitizer/html` — `sanitizeHtml`, `scanHtmlFragment`,
 `looksLikeHtmlSource`, `spliceRanges`, `isHiddenStyle`, `isHiddenElement`,
-`isHiddenOpen`, `closingTagName`, `detectExfil`, `checkExfilUrl`, `urlHost`, and
-the constants `REPORTED_TAGS`, `COMMENT_PLACEHOLDER`, `HIDDEN_PLACEHOLDER`,
-`DATA_URI_LENGTH_THRESHOLD`.
+`isHiddenOpen`, `closingTagName`, `detectExfil`, `checkExfilUrl`, `urlHost`, the
+constants `REPORTED_TAGS`, `COMMENT_PLACEHOLDER`, `HIDDEN_PLACEHOLDER`,
+`DATA_URI_LENGTH_THRESHOLD`, and the pre-gates `HTML_TAG_PRESENT`,
+`MD_LINK_HINT`, `SECRET_HINT`, `SECRET_HINT_EXT`, `matchesSecretHint`.
 
 ## Development
 
