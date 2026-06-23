@@ -22,6 +22,7 @@ Entry points:
 
 import atexit
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -58,6 +59,21 @@ def _node_missing(node: str) -> RuntimeError:
     )
 
 
+def _require_cli() -> None:
+    """Fail with a clear message if the bundled CLI isn't where we expect.
+
+    The CLI is resolved relative to this module's source tree, so the client
+    only works from a repo checkout (it is not yet pip-installable). Without
+    this check a missing CLI surfaces as an opaque "node: Cannot find module".
+    """
+    if not _CLI.is_file():
+        raise RuntimeError(
+            f"sanitize CLI not found at {_CLI}. The Python client resolves the "
+            "bundled CLI relative to its source checkout and is not yet "
+            "pip-installable; run it from a repo checkout."
+        )
+
+
 def _encode_request(text: str, html: bool) -> str:
     """The on-wire request envelope, single-sourced for both call paths."""
     return json.dumps({"text": text, "html": html})
@@ -77,23 +93,15 @@ def sanitize(
     persist: bool | None = None,
     node: str = "node",
 ) -> SanitizeResult:
-    """Sanitize ``text``.
+    """Sanitize ``text``. Set ``html=True`` to also run the HTML layers.
 
-    Set ``html=True`` to run the HTML layers (Layers 2 & 3) in addition to the
-    always-on Layer 1.
-
-    ``persist`` selects how the Node process is managed:
-
-    * ``None`` (default) — persist exactly when ``html=True``. HTML's ~200 ms
-      module-load is then paid once for the whole process: the first such call
-      starts the shared worker and the rest reuse it. Layer-1-only calls stay
-      one-shot so a non-HTML caller leaves no process running.
-    * ``True`` — always route through the shared worker.
-    * ``False`` — always spawn a fresh one-shot subprocess.
-
-    ``node`` overrides the Node executable (only honored when starting a fresh
-    process; an already-running shared worker keeps the executable it began with).
+    ``persist`` picks the process model (see the module docstring for the
+    amortization rationale): ``None`` (default) routes through the shared worker
+    exactly when ``html=True`` and stays one-shot otherwise; ``True``/``False``
+    force the worker or a fresh one-shot subprocess. ``node`` overrides the
+    executable, honored only when starting a fresh process.
     """
+    _require_cli()
     if persist is None:
         persist = html
     if persist:
@@ -132,6 +140,9 @@ class Sanitizer:
     def __init__(self, node: str = "node") -> None:
         self._node = node
         self._proc: subprocess.Popen | None = None
+        # The pid that spawned the worker, so a worker inherited across os.fork
+        # can be detected and not shared between processes (see _shared_worker).
+        self._pid: int | None = None
         # Worker stderr goes to a temp file, never a pipe: nobody drains stderr
         # between requests, so a pipe could fill (Node warnings, etc.) and block
         # the worker mid-response, deadlocking the readline below. A file never
@@ -139,6 +150,8 @@ class Sanitizer:
         self._stderr: tempfile.SpooledTemporaryFile | None = None
 
     def start(self) -> "Sanitizer":
+        _require_cli()
+        self._pid = os.getpid()
         self._stderr = tempfile.SpooledTemporaryFile(mode="w+", encoding="utf-8")
         try:
             self._proc = subprocess.Popen(
@@ -171,6 +184,11 @@ class Sanitizer:
         assert self._proc.stdin is not None and self._proc.stdout is not None
         self._proc.stdin.write(_encode_request(text, html) + "\n")
         self._proc.stdin.flush()
+        # Blocking read with no timeout, under _shared_worker_lock for the shared
+        # worker: the serialized one-line-per-request protocol can't interleave,
+        # but a worker that never answers would wedge every persistent caller.
+        # The CLI emits exactly one line per request, so this is bounded in
+        # practice; a hang means a CLI bug, surfaced as a stuck process.
         line = self._proc.stdout.readline()
         if line == "":
             raise RuntimeError(
@@ -214,14 +232,23 @@ _atexit_registered = False
 def _shared_worker(node: str) -> Sanitizer:
     """Return the shared worker, starting it on first use. Caller holds the lock.
 
-    A worker found dead (its prior request already raised, so the failure was
-    surfaced loudly) is discarded and replaced, so the persistent path
-    self-heals rather than wedging every later call on a corpse.
+    Two cases force a fresh worker:
+
+    * Inherited across ``os.fork`` (pid mismatch) — the Popen and its pipes
+      belong to the parent; two processes driving one pipe would desync the
+      protocol. Abandon the reference WITHOUT ``close()`` (reaping a process this
+      child doesn't own is undefined) and spawn one this process owns.
+    * Dead (its prior request already raised, surfacing the failure loudly) —
+      reap its pipes/temp file, then replace it, so the path self-heals instead
+      of wedging every later call on a corpse.
     """
     global _worker, _atexit_registered
-    if _worker is not None and not _worker.is_alive():
-        _worker.close()  # reap the corpse's pipes/temp file before replacing it
-        _worker = None
+    if _worker is not None:
+        if _worker._pid != os.getpid():
+            _worker = None  # inherited across fork; do not reap the parent's proc
+        elif not _worker.is_alive():
+            _worker.close()
+            _worker = None
     if _worker is None:
         _worker = Sanitizer(node=node).start()
         if not _atexit_registered:

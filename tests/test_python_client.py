@@ -7,8 +7,11 @@ verdicts themselves are owned by the JS suite — here the CLI is the source of
 truth and the client must faithfully relay it.
 """
 
+import os
 import shutil
+import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -140,3 +143,62 @@ def test_worker_missing_node_fails_loudly() -> None:
     with pytest.raises(RuntimeError, match="Node.js"):
         with Sanitizer(node="definitely-not-a-real-node-binary"):
             pass
+
+
+def test_missing_cli_fails_with_clear_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ais, "_CLI", REPO_ROOT / "bin" / "does-not-exist.mjs")
+    with pytest.raises(RuntimeError, match="sanitize CLI not found"):
+        sanitize("x")
+
+
+def test_worker_error_response_becomes_runtime_error() -> None:
+    # A CLI `{error}` response (here: a non-string text) must surface as a clear
+    # exception, not a malformed SanitizeResult.
+    with Sanitizer() as worker:
+        with pytest.raises(RuntimeError, match="text must be a string"):
+            worker.sanitize(123)  # type: ignore[arg-type]
+
+
+def test_oneshot_error_becomes_runtime_error() -> None:
+    with pytest.raises(RuntimeError, match="sanitize CLI failed"):
+        sanitize(123, persist=False)  # type: ignore[arg-type]
+
+
+def test_drain_stderr_reads_back_worker_stderr() -> None:
+    # The death-diagnostic path: a child process writes to the worker's stderr
+    # temp file via its fd; _drain_stderr must read it back across that fd.
+    worker = Sanitizer()
+    worker._stderr = tempfile.SpooledTemporaryFile(mode="w+", encoding="utf-8")
+    node = shutil.which("node")
+    assert node is not None
+    subprocess.run(
+        [node, "-e", "process.stderr.write('diag-from-child')"],
+        stderr=worker._stderr,
+        check=True,
+    )
+    assert worker._drain_stderr() == "diag-from-child"
+    worker._stderr.close()
+
+
+def test_killed_worker_raises_loudly_on_next_use() -> None:
+    with Sanitizer() as worker:
+        worker._proc.kill()
+        worker._proc.wait()
+        with pytest.raises(RuntimeError, match="worker is not running"):
+            worker.sanitize("x")
+
+
+def test_shared_worker_not_shared_across_fork() -> None:
+    # Simulate inheriting a worker across os.fork: a pid mismatch must force a
+    # fresh process, never reuse the parent's pipe.
+    sanitize("x", persist=True)
+    inherited = ais._worker
+    assert inherited is not None
+    inherited._pid = -1  # pretend this worker was spawned by another process
+
+    sanitize("y", persist=True)
+    assert ais._worker is not None and ais._worker is not inherited
+    assert ais._worker._pid == os.getpid()
+    # The "inherited" worker was abandoned, not reaped — still running.
+    assert inherited.is_alive()
+    inherited.close()
