@@ -17,12 +17,19 @@ const CONTROL_INTRODUCER_RE = /[\u001b\u009b]/g;
 
 // Full ANSI escape grammar (CSI/SGR/OSC-with-BEL), not just SGR: the Layer-1
 // guarantee is that no control introducer survives, and a cursor-move or
-// erase sequence is as much a display-spoofing hazard as a color one. The
-// pattern is linear (every quantified run is bounded or non-overlapping), so it
-// carries no catastrophic-backtracking risk on adversarial input.
+// erase sequence is as much a display-spoofing hazard as a color one.
+//
+// The private-intro class is BOUNDED ({0,12}, not *) on purpose: ; and # live
+// in both this class and the parameter groups that follow, so an unbounded *
+// here lets a ;#;#... run be split between the two quantifiers — O(n^2)
+// backtracking on an ESC;#;#... string that never completes a sequence
+// (CodeQL js/polynomial-redos). A constant bound makes the intro a constant
+// factor, so the whole match is linear; a real sequence never carries more than
+// a couple of intro bytes, and any ESC the regex declines to match is still
+// removed by the residual-introducer sweep in applyLayer1.
 // prettier-ignore
 // eslint-disable-next-line no-control-regex -- matching ESC-led sequences is the point
-const ANSI_RE = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
+const ANSI_RE = /[\u001b\u009b][[\]()#;?]{0,12}(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
 
 // Unpaired UTF-16 surrogates (high not followed by low, or low not preceded by
 // high). Normalized before any HTML parser, which throws on a stray byte —
