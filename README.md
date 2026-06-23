@@ -1,182 +1,126 @@
 # `agent-input-sanitizer`
 
 Sanitize untrusted text **before any model sees it**—in an agent, RAG, or
-tool-use pipeline. Provider-agnostic: it cleans bytes, not prompts. Every entry
-point is a pure transform or a function with an **injected** I/O/engine seam, so
-nothing about a specific agent harness (Claude, or any other) is baked in.
-
-The core cleaners, split across entry points so the heavy HTML dependency stays
-opt-in:
-
-1. **Invisible-char + ANSI stripping** (`./invisible`, zero runtime deps) —
-   removes zero-width spaces, bidi controls, variation selectors, tag
-   characters, ANSI/SGR escapes, and other hidden code points used to smuggle
-   instructions. Preserves ZWNJ/ZWJ where scripts (Arabic, Indic, emoji)
-   require them. The composite `applyLayer1` (ANSI + invisibles, lone-surrogate
-   safe) is re-exported from the package root.
-2. **Hidden-HTML splicing** (`./html`)—splices out instructions buried in
-   comments, `display:none`, off-screen, white-on-white, `hidden`/`aria-hidden`,
-   etc. Leaves a placeholder; preserves every other byte verbatim.
-3. **Exfil-URL detection** (`./html`, detection only)—reports URLs shaped to
-   leak data off-origin (payloads in query/path, embedded credentials,
-   `data:`/`javascript:` targets, off-origin redirects). Reports, never edits.
-
-Built on those, entry points covering each ingress an agent has:
-
-4. **Confusable/homoglyph folding** (`./confusables`)—fold look-alike glyphs in
-   tool-call **input** fields (paths, commands) to their ASCII canon, closing a
-   cross-script deny-rule bypass. The homoglyph scanner is **injected**
-   (`{ scan }`).
-5. **Instruction-file scanning** (`./instructions`)—scan/auto-clean
-   `CLAUDE.md` / `AGENTS.md` / `SKILL.md` / any markdown that loads as model
-   context, decoding Unicode-tag and zero-width-binary payloads. The target file
-   set is a **caller-supplied glob set**.
-6. **User-prompt verdict** (`./prompt`)—classify a submitted prompt as
-   pass / pass-with-SGR-note / block on payload-capable invisible/ANSI content.
-7. **Tool-output pipeline** (`./output`)—run Layers 1–4 over structured tool
-   output, preserving its shape. Layer 4 (secret redaction) is an **injected**
-   redactor; an optional Layer-5 slot takes a filter that returns _verbatim
-   spans to delete_, so even a compromised filter can only remove bytes.
-8. **Edit-repair / rehydration** (`./rehydrate`, `./view-map`)—re-anchor an
-   Edit/Write the model composed from the _sanitized_ view back onto the real
-   on-disk bytes, substitute redaction placeholders with the real secrets, and
-   **deny** any call that can’t be unambiguously anchored or that would expose a
-   secret in the next view. Without this, sanitizing a file’s view silently
-   breaks the agent’s ability to edit it. File access and the redactor are
-   injected via `io`.
-
-See [THREAT-MODEL.md](./THREAT-MODEL.md) for per-vector detail.
+tool-use pipeline. It cleans bytes, not prompts, so it’s provider-agnostic:
+every entry point is a pure transform or takes an **injected** I/O/engine seam,
+with nothing about a specific agent harness (Claude, or any other) baked in.
 
 ```sh
 npm install agent-input-sanitizer
 ```
 
-## Usage
-
-### Convenience function
+## Quick start
 
 ```js
 import { sanitize } from "agent-input-sanitizer";
 
-// Layer 1 only (invisible chars + ANSI), no heavy deps:
+// Layer 1 (invisible chars + ANSI), zero heavy deps:
 const { cleaned, found, warnings } = await sanitize(untrustedText);
 
-// Opt into the HTML layers for web/HTML ingress:
-const result = await sanitize(fetchedPageSource, { html: true });
-//   result.cleaned   — hidden HTML spliced out, placeholders left in place
-//   result.found     — stable category codes neutralized (e.g. ["cf-format", "hidden-html"])
-//   result.warnings  — human-facing notices (long-run alerts, exfil reasons, …)
+// Opt into the HTML layers for web ingress (lazy-loads ~200 ms of deps):
+const result = await sanitize(pageSource, { html: true });
 ```
 
-`sanitize` never throws and never silently drops content: any change to the
-text comes with at least one `warnings` entry. The `{ html: true }` path
-lazy-loads the HTML deps, so a Layer-1-only caller never pays for them.
+`sanitize` never throws and never silently drops content—any change comes with
+at least one `warnings` entry. `found` names the neutralized category codes
+(e.g. `["cf-format", "hidden-html"]`); `cleaned` is the safe text, with
+placeholders where hidden HTML was spliced out.
 
-### Zero-dependency invisible-char core
+## Entry points
+
+Split into subpaths so the heavy HTML dependency stays opt-in. The **seam**
+column is the agent-specific concern each one injects, so it knows nothing about
+any particular harness.
+
+| #   | Import          | Purpose                                                                                                                            | Seam                        |
+| --- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| 1   | `/invisible`    | Strip zero-width, bidi, variation-selector and tag chars + ANSI/SGR escapes. Preserves ZWNJ/ZWJ for Arabic/Indic/emoji. Zero deps. | —                           |
+| 2   | `/html`         | Splice out instructions hidden in comments, `display:none`, off-screen, white-on-white, `hidden`. Leaves a placeholder.            | —                           |
+| 3   | `/html`         | Detect exfil-shaped URLs (payloads in query/path, embedded creds, `data:`/`javascript:`, off-origin redirects). Reports only.      | —                           |
+| 4   | `/confusables`  | Fold look-alike glyphs in tool-call input (paths, commands) to ASCII, closing a cross-script deny-rule bypass.                     | `scan`                      |
+| 5   | `/instructions` | Scan/auto-clean `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, etc., decoding Unicode-tag + zero-width-binary payloads.                     | glob set                    |
+| 6   | `/prompt`       | Classify a prompt pass / SGR-note / block on payload-capable invisible/ANSI content.                                               | —                           |
+| 7   | `/output`       | Run Layers 1–4 over structured tool output, preserving shape. The Layer-5 slot takes a delete-only filter.                         | `redact`, `filterInjection` |
+| 8   | `/rehydrate`    | Re-anchor a model Edit composed from the _sanitized_ view back onto real bytes; deny anything ambiguous or secret-exposing.        | `io`                        |
+
+See [THREAT-MODEL.md](./THREAT-MODEL.md) for per-vector detail.
+
+### Examples
 
 ```js
-import {
-  stripInvisible,
-  stripInvisibleWithReport,
-} from "agent-input-sanitizer/invisible";
+import { stripInvisibleWithReport } from "agent-input-sanitizer/invisible";
+const { cleaned, found } = stripInvisibleWithReport(text); // found: ["variation-selectors"]
 
-stripInvisible(text); // -> cleaned string
-const { cleaned, found } = stripInvisibleWithReport(text);
-//   found names exactly the category codes removed, e.g. ["variation-selectors"]
-```
-
-### HTML layer
-
-Heavier—it pulls in the unified/remark/rehype graph (~200 ms of module-load
-time). Import it directly only when you need it.
-
-```js
 import {
   sanitizeHtml,
   detectExfil,
   checkExfilUrl,
 } from "agent-input-sanitizer/html";
-
-const cleaned = sanitizeHtml(pageSource); // null when nothing to strip/report
-const threats = detectExfil(pageSource); // null or [{ isImage, reason, target }]
-const reason = checkExfilUrl(oneUrl); // null or a string reason
+sanitizeHtml(pageSource); // cleaned string, or null when nothing to strip
+detectExfil(pageSource); // [{ isImage, reason, target }] or null
+checkExfilUrl(oneUrl); // reason string or null
 ```
 
-### Agent-pipeline entry points
-
-Each takes plain arguments and returns plain results; agent-specific concerns
-(homoglyph engine, secret redactor, file access, hook envelope) are injected, so
-none of them know about any particular agent harness.
+The agent-pipeline entry points take plain arguments and inject their
+agent-specific seam:
 
 ```js
-// Confusable folding — inject your homoglyph scanner.
 import { normalizeConfusables } from "agent-input-sanitizer/confusables";
-const folded = normalizeConfusables(
+normalizeConfusables(
   "Bash",
   { command: "/аpt update" },
-  {
-    scan: (text) => myHomoglyphEngine.scan(text), // -> { findings:[{ index, char, latinEquivalent }] }
-  },
-);
-//   null when nothing changed, else { updatedInput, normalized }
+  { scan: (t) => myHomoglyphEngine.scan(t) }, // -> { findings: [{ index, char, latinEquivalent }] }
+); // null, or { updatedInput, normalized }
 
-// Instruction files — pass YOUR glob set.
 import {
   scanInstructionFiles,
   cleanFile,
 } from "agent-input-sanitizer/instructions";
-const findings = scanInstructionFiles(
-  ["CLAUDE.md", "AGENTS.md", "**/SKILL.md", ".claude/**/*.md"],
-  { cwd: projectDir },
-);
+const findings = scanInstructionFiles(["CLAUDE.md", "**/SKILL.md"], {
+  cwd: projectDir,
+});
 for (const { file } of findings) cleanFile(`${projectDir}/${file}`);
 
-// User prompt — pass/note/block verdict.
 import { classifyPrompt } from "agent-input-sanitizer/prompt";
-const verdict = classifyPrompt(submittedPrompt); // { action: "pass" | "note" | "block", reason? }
+classifyPrompt(submittedPrompt); // { action: "pass" | "note" | "block", reason? }
 
-// Tool output — Layers 1–4, redactor injected, optional Layer-5 spans slot.
 import { sanitizeText } from "agent-input-sanitizer/output";
-const out = await sanitizeText(toolText, {
+await sanitizeText(toolText, {
   html: isWebPage,
   exfilScan: isUntrustedIngress,
   redact: async (t) => myRedactor.redact(t), // -> { text, found, note? } | null
   filterInjection: (t) => mySemanticFilter(t), // -> { removeSpans, warning } | null
 });
 
-// Edit-repair — re-anchor a model-authored Edit onto real on-disk bytes.
 import { rehydrateRedacted } from "agent-input-sanitizer/rehydrate";
-const repaired = await rehydrateRedacted("Edit", toolInput, {
+await rehydrateRedacted("Edit", toolInput, {
   readFile: (p) => fs.readFileSync(p, "utf8"),
   redactMap: (t) => myRedactor.map(t), // -> { text, pairs } | { unmappable }
   redact: (t) => myRedactor.redact(t), // -> string | null
-});
-//   { updatedInput, context } | { deny } | null  — a deny never exposes a secret
+}); // { updatedInput, context } | { deny } | null — a deny never exposes a secret
 ```
 
 ## Non-JS pipelines (Python, etc.)
 
-The JS is the **single source of truth**; non-JS callers drive the same
-verdicts through the bundled CLI (JSON over stdin/stdout, Node ≥20 on `PATH`)
-—no second implementation to drift. The CLI bridges every self-contained
-entry point via an `op` field (default `"sanitize"`): `sanitizeText` (Layers
-1–3), `classifyPrompt`, `scanInstructionFiles`, and `cleanFile`. The
-agent-pipeline seams that take an **injected** JS callback (homoglyph scanner,
-redactor, file access) have no language-agnostic wire form, so call those from
-JS.
+The JS is the **single source of truth**—non-JS callers drive the same verdicts
+through the bundled CLI (JSON over stdin/stdout, Node ≥20 on `PATH`), so there’s
+no second implementation to drift. An `op` field selects the entry point
+(default `sanitize`); the self-contained ones—`sanitizeText`, `classifyPrompt`,
+`scanInstructionFiles`, `cleanFile`—are all bridged. Entry points with an
+injected JS callback have no wire form and stay JS-only.
 
 ```sh
-echo '{"text":"a​b","html":false}' | npx sanitize-cli  # default op: sanitize
-echo '{"op":"classifyPrompt","text":"…"}' | npx sanitize-cli  # pass/note/block
-sanitize-cli --worker                                   # newline-delimited, one response/line
+echo '{"text":"a​b"}' | npx sanitize-cli           # default op: sanitize
+echo '{"op":"classifyPrompt","text":"…"}' | npx sanitize-cli
+sanitize-cli --worker                              # newline-delimited, one response/line
 ```
 
-The [`python/`](./python) client wraps both. By default the ~200 ms HTML
-module-load is paid **once per process**: the first `html=True` call starts a
-shared worker that later calls reuse (Layer-1 calls stay one-shot, leaving no
-process behind). `persist=True/False` forces the mode; `shutdown_worker()` (also
-an `atexit` hook) stops it, or scope one with the `Sanitizer` context manager.
-No pure-Python port—a port _is_ the drift this avoids; missing Node fails loudly.
+The [`python/`](./python) client wraps every bridged op (`sanitize`,
+`sanitize_text`, `classify_prompt`, `scan_instruction_files`, `clean_file`). The
+first `html=True` call starts a shared worker, so the ~200 ms HTML module-load
+is paid **once per process**; Layer-1 calls stay one-shot. `persist=True/False`
+forces the mode and `shutdown_worker()` (also an `atexit` hook) stops it. Missing
+Node fails loudly—a pure-Python port _is_ the drift this avoids.
 
 ```python
 from agent_input_sanitizer import sanitize, Sanitizer
@@ -186,6 +130,3 @@ sanitize(page_source, html=True)  # HTML layers, warm worker reused
 with Sanitizer() as s:            # own the worker’s lifetime
     s.sanitize(page, html=True)
 ```
-
-The other self-contained entry points are wrapped too:
-`sanitize_text`, `classify_prompt`, `scan_instruction_files`, `clean_file`.
