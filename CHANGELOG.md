@@ -8,6 +8,17 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [1.0.4] - 2026-06-23
+
+### Changed
+
+- ci(format-autofix): skip cleanly when AUTOFIX_TOKEN is absent
+- docs: generate changelog from commits, stop hand-editing Unreleased
+- ci: auto-apply prettier on pull requests
+- style: apply prettier to README
+- test(types): typecheck the emitted declarations as a consumer
+- fix(types): annotate SECRET_HINT regexes as RegExp
+
 ## [1.0.3] - 2026-06-23
 
 ### Changed
