@@ -18,12 +18,10 @@ if [[ -z "$base" || -z "$head" ]]; then
   exit 0
 fi
 
-# A shallow checkout may lack the base commit; deepen until the diff resolves.
+# The workflow checks out with fetch-depth: 0, so the base commit is present for
+# any PR/push diff. If it somehow isn't, fail OPEN rather than skip a real gate.
 if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-  git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
-fi
-if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-  echo "Base commit $base not fetchable; running mutation testing (fail open)."
+  echo "Base commit $base not present; running mutation testing (fail open)."
   exit 0
 fi
 
