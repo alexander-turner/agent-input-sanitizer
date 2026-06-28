@@ -56,8 +56,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [20, 22]
-    name: Python client (${{ matrix.os }}, Node ${{ matrix.node }})
+    name: Python client (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -65,10 +64,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # The OS axis is the point here: the Python client drives Node through
+      # POSIX setsid/killpg/process groups, which diverge on macOS/BSD. The Node
+      # version is pinned (not matrixed) because the repo's packageManager
+      # (pnpm@11.8.0) imports node:sqlite and so requires Node >=22.13 — a Node-20
+      # leg can't even bootstrap pnpm. The published library's Node>=20 runtime
+      # support is exercised by the consumer-style pack-smoke job instead.
       - name: Setup base environment
         uses: ./.github/actions/setup-base-env
         with:
-          node-version: ${{ matrix.node }}
+          node-version: "22"
           setup-python: "true"
 
       - name: Python client tests
