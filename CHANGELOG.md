@@ -8,6 +8,16 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [1.2.6] - 2026-06-28
+
+### Fixed
+
+- HTML documents containing only processing instructions are now routed through the sanitizer correctly.
+
+### Changed
+
+- Documentation updated to prefer precision over recall in the detection layers.
+
 ## [1.2.5] - 2026-06-28
 
 ### Fixed
