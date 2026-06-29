@@ -72,6 +72,13 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Mutation testing needs a deterministic oracle: Stryker aborts a shard if
+    # any test fails in its initial dry run, so a randomized property test that
+    # rolls a counterexample on one shard's seed would flake the whole gate.
+    # FC_REPRODUCIBLE pins fast-check to the fixed seed (see test/test-helpers.mjs)
+    # so every shard's dry run is stable and green.
+    env:
+      FC_REPRODUCIBLE: "1"
     strategy:
       fail-fast: false
       matrix:
