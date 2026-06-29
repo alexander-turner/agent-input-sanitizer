@@ -8,6 +8,29 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [1.2.15] - 2026-06-29
+
+### Added
+- SECURITY.md file documenting security policies and responsible disclosure.
+- CONTRIBUTING.md file with contribution guidelines.
+- GitHub issue and pull request templates to standardize submissions.
+- Documentation for the ./view-map utility.
+- Fuzz coverage testing with property-suite input domain validation against threat codepoints.
+- Smoke test for pack-and-install with OS and Node version matrix coverage.
+
+### Changed
+- Improved release publishing to match npm publish-conflict errors by error code instead of stderr text matching.
+
+### Fixed
+- Instructions: exclusive temp write without symlink following, and reporting of mixed-encoding runs.
+- Rehydrate: fail gracefully on empty old_string instead of throwing RangeError.
+- Invisible: capped and flagged carve-out-preserved joiners to close zero-width covert channel.
+- Dependabot configuration with cooldown settings across all ecosystems.
+- Python-client CI matrix pinned to Node 22 for pnpm compatibility.
+
+### Removed
+- Unused bin/lib/retry.bash script.
+
 ## [1.2.10] - 2026-06-29
 
 ### Fixed
