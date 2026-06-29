@@ -28,7 +28,7 @@ jobs:
         # Credentials stay persisted: version-bump.sh pushes the release-docs
         # commit to main and the tag with them. A PAT clears branch/tag
         # protection; falls back to GITHUB_TOKEN.
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3 # zizmor: ignore[artipacked]
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.3 # zizmor: ignore[artipacked]
         with:
           # Full history so the script can find the last tag and the commit range.
           fetch-depth: 0
