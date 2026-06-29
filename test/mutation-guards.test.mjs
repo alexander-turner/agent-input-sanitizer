@@ -147,7 +147,7 @@ describe("guard: sanitize warning text is exact, not just present", () => {
     const warn = out.warnings.find((w) => w.startsWith("Stripped:"));
     assert.equal(
       warn,
-      `Stripped: ${CATEGORY_LABELS[CATEGORY.CF]}, ${CATEGORY_LABELS[CATEGORY.VARIATION_SELECTORS]}`,
+      `Stripped: ${CATEGORY_LABELS[CATEGORY.CF]}, ${CATEGORY_LABELS[CATEGORY.VARIATION_SELECTORS]} — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization`,
     );
   });
 });

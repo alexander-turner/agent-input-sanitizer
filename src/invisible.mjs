@@ -127,6 +127,28 @@ export const LONG_RUN_RE = new RegExp(
   REGEX_FLAGS,
 );
 
+/**
+ * The agent-facing "Stripped: …" note for a Layer-1 strip: the removed category
+ * labels, the LONG RUN marker when the de-ANSI'd text still holds a
+ * payload-length invisible run, and a pointer to recover the bytes — a hex dump
+ * is ASCII, so it passes through sanitization untouched. The single source of
+ * this note, shared by the `sanitize` convenience entry and the tool-output
+ * pipeline so the two can't drift.
+ * @param {string[]} invisFound CATEGORY codes applyLayer1 reported removing
+ * @param {string} deAnsi ANSI-stripped text (invisible runs intact), for the LONG_RUN probe
+ * @returns {string}
+ */
+export function describeStripped(invisFound, deAnsi) {
+  let msg = `Stripped: ${invisFound.map((code) => CATEGORY_LABELS[code]).join(", ")}`;
+  LONG_RUN_RE.lastIndex = 0;
+  if (LONG_RUN_RE.test(deAnsi))
+    msg += " [LONG RUN — possible injection payload]";
+  return (
+    msg +
+    " — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization"
+  );
+}
+
 // Leading-BOM marker, preserved by stripInvisibleWithReport (see its doc).
 const BOM = "\uFEFF";
 // ─── ZWNJ/ZWJ linguistic carve-out ───────────────────────────────────────────

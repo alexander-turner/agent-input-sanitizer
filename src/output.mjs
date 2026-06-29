@@ -20,12 +20,7 @@
  * filter can at most remove legitimate content — it can never inject new bytes
  * into the model's view. A consumer running a live LLM filter wires it here.
  */
-import {
-  CATEGORY,
-  CATEGORY_LABELS,
-  LONG_RUN_RE,
-  isSgrOnly,
-} from "./invisible.mjs";
+import { CATEGORY, describeStripped, isSgrOnly } from "./invisible.mjs";
 import { HTML_TAG_PRESENT, MD_LINK_HINT } from "./gates.mjs";
 import { applyLayer1, LONE_SURROGATE_RE } from "./layer1.mjs";
 
@@ -133,13 +128,7 @@ function processLayer1(text, sgrCarveOut) {
       invisFound[0] === CATEGORY.ANSI &&
       isSgrOnly(text) &&
       sgrCarveOut;
-    if (!sgrNote) {
-      LONG_RUN_RE.lastIndex = 0;
-      let msg = `Stripped: ${invisFound.map((code) => CATEGORY_LABELS[code]).join(", ")}`;
-      if (LONG_RUN_RE.test(deAnsi))
-        msg += " [LONG RUN — possible injection payload]";
-      warnings.push(msg);
-    }
+    if (!sgrNote) warnings.push(describeStripped(invisFound, deAnsi));
   }
   // Normalize lone UTF-16 surrogates for ALL output: a secret split by an
   // interposed lone surrogate reads as adjacent to a model rendering its own

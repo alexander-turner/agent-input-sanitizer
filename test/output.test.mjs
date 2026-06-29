@@ -128,7 +128,9 @@ describe("sanitizeText: Layer 1 invisible/ANSI/surrogate", () => {
     assert.equal(r.cleaned, "malware");
     assert.equal(r.modified, true);
     assert.equal(r.sgrNote, false);
-    assert.deepEqual(r.warnings, ["Stripped: Format chars (Cf)"]);
+    assert.deepEqual(r.warnings, [
+      "Stripped: Format chars (Cf) — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization",
+    ]);
   });
 
   it("appends the LONG RUN marker when a long invisible run is present", async () => {
@@ -137,7 +139,7 @@ describe("sanitizeText: Layer 1 invisible/ANSI/surrogate", () => {
     assert.equal(r.modified, true);
     assert.equal(
       r.warnings[0],
-      "Stripped: Format chars (Cf) [LONG RUN — possible injection payload]",
+      "Stripped: Format chars (Cf) [LONG RUN — possible injection payload] — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization",
     );
   });
 
@@ -155,7 +157,9 @@ describe("sanitizeText: Layer 1 invisible/ANSI/surrogate", () => {
     const r = await sanitizeText(`${ESC}[31mfail${ESC}[0m`);
     assert.equal(r.cleaned, "fail");
     assert.equal(r.sgrNote, false);
-    assert.deepEqual(r.warnings, ["Stripped: ANSI escapes"]);
+    assert.deepEqual(r.warnings, [
+      "Stripped: ANSI escapes — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization",
+    ]);
   });
 
   it("normalizes a lone surrogate, warns, and resets sgrNote to false", async () => {
@@ -450,7 +454,9 @@ describe("sanitizeValue", () => {
     const r = await sanitizeValue(`mal${ZW}ware`, {}, warnings);
     assert.equal(r.value, "malware");
     assert.equal(r.modified, true);
-    assert.deepEqual(warnings, ["Stripped: Format chars (Cf)"]);
+    assert.deepEqual(warnings, [
+      "Stripped: Format chars (Cf) — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization",
+    ]);
   });
 
   it("recurses into an array, sanitizing each string leaf", async () => {

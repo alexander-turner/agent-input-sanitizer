@@ -10,7 +10,7 @@
  * subpath entries; import those directly when you want a single layer without
  * the convenience wrapper.
  */
-import { LONG_RUN_RE, CATEGORY, CATEGORY_LABELS } from "./invisible.mjs";
+import { CATEGORY, describeStripped } from "./invisible.mjs";
 import { applyLayer1, LONE_SURROGATE_RE } from "./layer1.mjs";
 
 // Layer 1 lives in the zero-dependency `./layer1.mjs`, shared verbatim with the
@@ -93,11 +93,7 @@ export async function sanitize(text, { html = false } = {}) {
   let cleaned = layer1;
   if (invisFound.length > 0) {
     found.push(...invisFound);
-    let msg = `Stripped: ${invisFound.map((code) => CATEGORY_LABELS[code]).join(", ")}`;
-    LONG_RUN_RE.lastIndex = 0;
-    if (LONG_RUN_RE.test(deAnsi))
-      msg += " [LONG RUN — possible injection payload]";
-    warnings.push(msg);
+    warnings.push(describeStripped(invisFound, deAnsi));
   }
 
   const wellFormed = cleaned.replace(LONE_SURROGATE_RE, "\uFFFD");

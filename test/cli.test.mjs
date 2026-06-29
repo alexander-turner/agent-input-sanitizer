@@ -73,7 +73,9 @@ describe("CLI: invoked through a symlinked bin (published-package shape)", () =>
     assert.deepEqual(JSON.parse(out), {
       cleaned: "ab",
       found: ["cf-format"],
-      warnings: ["Stripped: Format chars (Cf)"],
+      warnings: [
+        "Stripped: Format chars (Cf) — inspect the removed bytes with a hex dump (xxd / od -c), which survives sanitization",
+      ],
     });
   });
 });
