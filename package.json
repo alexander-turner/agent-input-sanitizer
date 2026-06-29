@@ -11,6 +11,7 @@
     "url": "https://github.com/alexander-turner/agent-input-sanitizer/issues"
   },
   "homepage": "https://github.com/alexander-turner/agent-input-sanitizer#readme",
+  "author": "Alexander Turner",
   "packageManager": "pnpm@11.8.0",
   "bin": {
     "sanitize-cli": "bin/sanitize-cli.mjs"

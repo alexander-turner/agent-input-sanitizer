@@ -1,0 +1,37 @@
+#!/bin/bash
+# Pre-push hook: run the full pre-commit suite over all files and auto-fix.
+#
+# CI's pre-commit.yaml runs `pre-commit run --all-files`; its fixers
+# (trailing-whitespace, end-of-file, prettier, ruff) mutate files, so a fixable
+# defect that slipped past the staged-only pre-commit hook still turns CI red.
+# This runs the same suite before every push: when a fixer changes a file it
+# commits the fix and stops the push so the next push carries it. A
+# non-autofixable failure blocks the push outright. Skips gracefully when
+# pre-commit is not installed (CI stays the backstop).
+
+set -euo pipefail
+
+git_root=$(git rev-parse --show-toplevel)
+cd "$git_root" || exit 1
+
+if [ -d "$git_root/.venv/bin" ]; then
+  export PATH="$git_root/.venv/bin:$PATH"
+fi
+
+if ! command -v pre-commit >/dev/null 2>&1; then
+  exit 0
+fi
+
+if pre-commit run --all-files; then
+  exit 0
+fi
+
+if git diff --quiet; then
+  echo "pre-push: pre-commit reported non-autofixable issues — fix them above." >&2
+  exit 1
+fi
+
+git add -A
+git commit --no-verify -m "style: auto-fix pre-commit issues"
+echo "pre-push: auto-fixed and committed pre-commit issues — re-run 'git push'." >&2
+exit 1

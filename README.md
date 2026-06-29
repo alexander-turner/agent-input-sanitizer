@@ -122,7 +122,7 @@ resolves the bundled CLI relative to
 its own source tree—so it runs from a repo checkout, not yet a `pip install`. The
 first `html=True` call starts a shared worker, so the ~200 ms HTML module-load
 is paid **once per process**; Layer-1 calls stay one-shot. `persist=True/False`
-forces the mode and `shutdown_worker()` (also an `atexit` hook) stops it. 
+forces the mode and `shutdown_worker()` (also an `atexit` hook) stops it.
 
 ```python
 from agent_input_sanitizer import sanitize, Sanitizer
