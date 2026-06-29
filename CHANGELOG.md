@@ -8,6 +8,13 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [1.4.0] - 2026-06-29
+
+### Changed
+
+- test(golden): re-record cross-language golden for the hex-dump hint
+- feat(sanitize): point agents to a hex dump for Layer-1 stripped bytes
+
 ## [1.3.5] - 2026-06-29
 
 ### Changed
