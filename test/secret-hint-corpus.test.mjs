@@ -157,12 +157,44 @@ const POSITIVE_CASES = [
   ["pass => value", 'pass => "' + "a".repeat(20)],
 ];
 
-// Ordinary prose / filenames that must NOT match any arm.
+// Ordinary prose / filenames / identifiers that must NOT match any arm. The
+// second group is the precision guard: legitimate-but-credential-adjacent
+// strings (hashes, UUIDs, version/date strings, slugs, digit runs, descriptive
+// prose) that a name-only or shape-careless gate would over-match. Per the
+// repo's precision doctrine, a false positive here splices real content, so
+// these pin zero findings on benign input. (Descriptive prose deliberately
+// avoids the literal keyword arms — `secret`/`token`/`password`/`pwd` etc. are
+// intentional recall arms and DO match by design; the guard is that a
+// credential SHAPE, not an English topic word, is what drives a match.)
 const NEGATIVE_CASES = [
   ["plain greeting", "hello world"],
   ["ordinary filename", "ordinary-file-name.txt"],
   ["short alnum", "abc123"],
   ["lorem ipsum", "lorem ipsum dolor sit amet"],
+  // ── precision guard: legitimate but credential-adjacent ───────────────────
+  ["lowercase hex git sha", "commit 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"],
+  ["uuid v4", "id 550e8400-e29b-41d4-a716-446655440000"],
+  ["semver with date", "release 12.4.1 built on 2026-06-29"],
+  [
+    "benign base64 asset hash in word context",
+    "the bundle main.9fbe7a2c4d.css loaded fine",
+  ],
+  [
+    "long kebab slug",
+    "this-is-a-very-long-descriptive-article-slug-about-cats",
+  ],
+  ["long snake slug", "user_profile_settings_page_layout_container_wrapper"],
+  ["isbn", "ISBN 978-3-16-148410-0"],
+  ["phone number", "call 415-555-0132 for support"],
+  ["credit-card-shaped digit run", "4111 1111 1111 1111"],
+  [
+    "descriptive prose, no credential shape (a)",
+    "the API access requires a login first",
+  ],
+  [
+    "descriptive prose, no credential shape (b)",
+    "each visitor receives a numbered raffle entry at the door",
+  ],
 ];
 
 describe("SECRET_HINT / SECRET_HINT_EXT arm corpus", () => {
