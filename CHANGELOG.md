@@ -8,6 +8,14 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [1.3.5] - 2026-06-29
+
+### Changed
+
+- fix(html): own-key named-color lookup so prototype values don't poison isHiddenStyle
+- ci(mutation): shard the run across parallel jobs with aggregated gate
+- perf(mutation): enable Stryker incremental mode with CI cache
+
 ## [1.3.4] - 2026-06-29
 
 ### Changed
