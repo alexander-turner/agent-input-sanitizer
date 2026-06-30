@@ -125,6 +125,10 @@ const HIDDEN_STYLE_CASES = [
   ["transform:rotateX(270deg)", true],
   ["transform:translateX(-9999px)", true], // offscreen via transform (bug: position-only)
   ["transform:translatex(-100vw)", true], // a full viewport-width clears the screen
+  ["transform:translate(0,-9999px)", true], // Y axis offscreen, X=0 (second arg was ignored)
+  ["transform:translate(-9999px,0)", true], // X axis offscreen
+  ["transform:translate(0,0)", false], // neither axis shifts
+  ["transform:translate(5px,-10px)", false], // small two-axis shift stays on screen
   ["transform:translatex(-50vw)", false], // half-shift stays partly visible (precision)
   ["transform:scale(0.5)", false],
   ["transform:scale(0.8)", false], // mild shrink stays readable
@@ -149,6 +153,21 @@ const HIDDEN_STYLE_CASES = [
   ["color:white;background-color:black", false],
   ["background-color:white", false], // color absent — not same-color
   ["color:rgb(0,0,0);background:rgb(255,255,255)", false],
+  // ── content-visibility ──
+  ["content-visibility:hidden", true],
+  ["content-visibility:auto", false], // perf hint; content stays visible
+  ["content-visibility:visible", false],
+  // ── filter: opacity(0) (number or percentage) ──
+  ["filter:opacity(0)", true],
+  ["filter:opacity(0%)", true],
+  ["filter:opacity(0.005)", true], // sub-epsilon fraction
+  ["filter:opacity(0.5%)", true], // 0.5% = 0.005 fraction, effectively invisible
+  ["filter:blur(2px) opacity(0)", true], // opacity(0) anywhere in the list hides
+  ["filter:opacity(0.5)", false], // half-transparent stays readable
+  ["filter:opacity(50%)", false], // 50% = 0.5 fraction, visible
+  ["filter:opacity(1)", false],
+  ["filter:blur(2px)", false], // no opacity function — visible
+  ["filter:none", false],
   // ── degenerate / invalid input ──
   ["", false],
   ["a{b:c}", false],
