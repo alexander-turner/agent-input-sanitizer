@@ -43,7 +43,7 @@ jobs:
 
   # Stable Required check: runs even when `pack-smoke` is cancelled/skipped, so a
   # protected branch never gets stuck on a check that never reports.
-  pack-smoke-passed:
+  pack-smoke-passed: # required-check: true
     if: always()
     needs: [pack-smoke]
     runs-on: ubuntu-latest

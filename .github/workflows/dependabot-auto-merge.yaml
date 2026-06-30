@@ -52,7 +52,7 @@ jobs:
   # PRs (its result is then `skipped`, not a failure), so if this check is ever
   # marked Required a protected branch never gets stuck on a status that never
   # reports. Mirrors the *-passed gate every other workflow here uses.
-  dependabot-auto-merge-passed:
+  dependabot-auto-merge-passed: # required-check: false  # convenience gate for dependabot auto-merge, not a quality gate
     if: always()
     needs: [auto-merge]
     runs-on: ubuntu-latest

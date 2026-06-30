@@ -27,7 +27,7 @@ jobs:
 
   # Stable Required check: runs even when `pre-commit` is cancelled/skipped, so
   # a protected branch never gets stuck on a check that never reports.
-  pre-commit-passed:
+  pre-commit-passed: # required-check: true
     if: always()
     needs: [pre-commit]
     runs-on: ubuntu-latest

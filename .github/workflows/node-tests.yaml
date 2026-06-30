@@ -56,7 +56,7 @@ jobs:
 
   # Stable Required check: runs even when `test` is cancelled/skipped, so a
   # protected branch never gets stuck on a check that never reports.
-  node-tests-passed:
+  node-tests-passed: # required-check: true
     if: always()
     needs: [test]
     runs-on: ubuntu-latest

@@ -1,0 +1,55 @@
+name: Sync required status checks
+
+# The apply half of the check-required-reporter pair. The pre-commit hook forces
+# every always() reporter on a PR-triggered workflow to carry a
+# `# required-check: true|false` annotation; this workflow reads those
+# annotations (the SSOT), expands each required job's name across its own matrix,
+# and rewrites the branch-protection ruleset's required_status_checks to exactly
+# that set — so a reporter's classification and the gate that actually blocks
+# merges can never silently drift apart.
+#
+# Runs only post-merge on main (and on demand); it never gates a PR, so it is not
+# itself a required check. Mutating branch protection needs a token with
+# `administration: write` — the stock GITHUB_TOKEN cannot edit rulesets. Provide
+# it as the RULESET_SYNC_TOKEN secret; the job fails loud if it is absent.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/**
+      - .pre-commit-config.yaml
+  workflow_dispatch:
+    inputs:
+      check-only:
+        description: "Report drift without mutating the ruleset"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize ruleset writes so two back-to-back merges can't race the PATCH. A
+  # static, ref-less group is safe here only because this workflow has no
+  # pull_request trigger — it never backs a required check that a cancelled run
+  # could strand at "Expected — Waiting".
+  group: sync-required-checks
+  cancel-in-progress: false
+  # static-concurrency-ok: not a required check (push/dispatch only)
+
+jobs:
+  sync:
+    name: Sync ruleset to required-check annotations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Sync required status checks
+        env:
+          GH_TOKEN: ${{ secrets.RULESET_SYNC_TOKEN }}
+          REPO: ${{ github.repository }}
+          CHECK_ONLY: ${{ inputs.check-only }}
+        run: bash .github/scripts/sync-required-checks.sh

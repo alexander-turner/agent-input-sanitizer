@@ -35,7 +35,7 @@ jobs:
   # protected branch never gets stuck on a check that never reports. Each
   # workflow's gate has a distinct name so it can be marked Required without
   # colliding with the others in branch-protection settings.
-  format-check-passed:
+  format-check-passed: # required-check: true
     if: always()
     needs: [format]
     runs-on: ubuntu-latest

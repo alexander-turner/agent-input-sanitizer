@@ -127,7 +127,7 @@ jobs:
   # Sum every shard's JSON into the project-wide mutation score and apply the
   # break threshold from stryker.conf.json. This is the real gate; the shards
   # themselves run with break disabled.
-  aggregate:
+  aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
     needs: [changes, mutation]
     if: always()
     runs-on: ubuntu-latest
@@ -161,7 +161,7 @@ jobs:
 
   # Stable Required check: runs even when upstream jobs are cancelled/skipped, so
   # a protected branch never gets stuck on a check that never reports.
-  mutation-passed:
+  mutation-passed: # required-check: true
     if: always()
     needs: [changes, mutation, aggregate]
     runs-on: ubuntu-latest

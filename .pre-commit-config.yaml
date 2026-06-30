@@ -51,7 +51,7 @@ repos:
   # Tier 1 (honesty + identity), Tier 2 (opinionated — this repo follows the
   # decide/reporter + cancel-in-progress conventions they assume), and Extras.
   - repo: https://github.com/alexander-turner/ci-truth-serum
-    rev: 0d932b98e1384685ec289b8f7bb2df760ebfb8af # main (no tagged release yet)
+    rev: 55b3c2af0b83f77f15eba92aac743bdf8ff254be # main (no tagged release yet)
     hooks:
       # Tier 1 · Honesty
       - id: check-workflow-pipefail
@@ -63,6 +63,10 @@ repos:
       - id: check-pinned-downloads
       # Tier 2 · Opinionated
       - id: check-always-reporter
+      # Forces a `# required-check: true|false` marker on every always() reporter;
+      # sync-required-checks.yaml reads those markers to rewrite the branch
+      # ruleset, so the two can't drift.
+      - id: check-required-reporter
       - id: check-inline-run-length
       - id: check-concurrency
       - id: check-static-concurrency

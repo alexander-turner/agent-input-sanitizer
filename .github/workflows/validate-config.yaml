@@ -83,7 +83,7 @@ jobs:
   # cancelled/skipped, so a protected branch never gets stuck on a check that
   # never reports. A matrix job reports many statuses; gating on this single
   # reporter keeps one stable Required check name regardless of matrix size.
-  validate-config-passed:
+  validate-config-passed: # required-check: true
     if: always()
     needs: [validate, python-client]
     runs-on: ubuntu-latest
