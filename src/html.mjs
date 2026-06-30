@@ -114,10 +114,31 @@ function isHidingTransform(transform) {
     const degrees = ((parseFloat(rotate[1]) % 360) + 360) % 360;
     if (degrees === 90 || degrees === 270) return true;
   }
-  // translateX/translateY/translate far off-screen.
-  for (const match of transform.matchAll(/\btranslate(?:[xy])?\(\s*([^,)]+)/gi))
-    if (isOffscreenOffset(match[1].trim())) return true;
+  // translateX/translateY/translate far off-screen. A two-axis `translate(x, y)`
+  // hides when EITHER axis clears the viewport, so split the argument list and
+  // test each — checking only the first arg missed a `translate(0, -9999px)`.
+  for (const match of transform.matchAll(/\btranslate(?:[xy])?\(\s*([^)]*)/gi))
+    for (const arg of match[1].split(","))
+      if (isOffscreenOffset(arg.trim())) return true;
   return false;
+}
+
+/**
+ * A `filter` that renders content invisible: an `opacity(0)` function drops the
+ * element to fully transparent. The amount is a <number-percentage> (`0`..`1` or
+ * `0%`..`100%`), so a percentage is divided to a fraction before the near-zero
+ * test. Other filter functions (blur, brightness, drop-shadow) keep content
+ * visible and are left alone; an unparseable amount fails OPEN (visible).
+ * @param {string} filter
+ * @returns {boolean}
+ */
+function isHidingFilter(filter) {
+  if (!filter) return false;
+  const match = filter.match(/\bopacity\(\s*([0-9]*\.?[0-9]+)\s*(%?)\s*\)/i);
+  if (!match) return false;
+  const value = parseFloat(match[1]);
+  const fraction = match[2] === "%" ? value / 100 : value;
+  return fraction < NEAR_ZERO_EPSILON;
 }
 
 /** @param {(key: string) => string} val */
@@ -231,6 +252,10 @@ export function isHiddenStyle(styleStr) {
   if (val("display") === "none") return true;
   if (val("visibility") === "hidden" || val("visibility") === "collapse")
     return true;
+  // `content-visibility:hidden` skips rendering the element's contents entirely
+  // (not even laid out), so the text is invisible to a human but present in the
+  // source. `auto`/`visible` keep it rendered and must not match.
+  if (val("content-visibility") === "hidden") return true;
 
   // CSS clamps opacity to [0,1], so any NEGATIVE value renders fully
   // transparent — `parseFloat < EPSILON` (no `Math.abs`) treats `-1`/`-0.5` as
@@ -259,6 +284,7 @@ export function isHiddenStyle(styleStr) {
   )
     return true;
   if (isHidingTransform(val("transform"))) return true;
+  if (isHidingFilter(val("filter"))) return true;
 
   // Same-color text on its background (white-on-white) and fully transparent
   // text are invisible to a human but plain text to the model. Colors are
