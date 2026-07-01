@@ -1,17 +1,11 @@
 # `agent-input-sanitizer`
 
-Sanitize untrusted text **before any model sees it**—in an agent, RAG, or
-tool-use pipeline. It cleans bytes, not prompts, so it’s provider-agnostic:
-every entry point is a pure transform or takes an **injected** input / output / engine seam,
-with nothing about a specific agent harness (Claude, or any other) baked in.
-
 Most prompt-injection tools run a classifier _over_ the text and hope it
-generalizes. This library instead targets a narrower, verifiable claim: the
+generalizes. This library targets a narrower, verifiable claim: the
 specific byte-level channels—invisible Unicode, ANSI escapes, human-hidden
 HTML, confusable glyphs, exfil-shaped URLs—that let an attacker smuggle a
 payload the operator can't see but the model still reads. Every layer is a
-deterministic transform you can unit-test with exact-equality assertions, not
-a model call with a threshold to tune.
+deterministic transform you can unit-test with equality assertions.
 
 ```sh
 npm install agent-input-sanitizer
