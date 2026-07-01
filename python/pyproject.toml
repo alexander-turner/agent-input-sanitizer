@@ -35,9 +35,9 @@ license = { text = "MIT" }
 keywords = ["sanitizer", "prompt-injection", "unicode", "ansi", "security"]
 
 [project.urls]
-Homepage = "https://github.com/alexander-turner/agent-input-sanitizer"
-Repository = "https://github.com/alexander-turner/agent-input-sanitizer"
-Issues = "https://github.com/alexander-turner/agent-input-sanitizer/issues"
+Homepage = "https://github.com/AlexanderMattTurner/agent-input-sanitizer"
+Repository = "https://github.com/AlexanderMattTurner/agent-input-sanitizer"
+Issues = "https://github.com/AlexanderMattTurner/agent-input-sanitizer/issues"
 
 # The bundled CLI is git-ignored (a build artifact), so hatchling's VCS-aware
 # file collection skips it by default. `artifacts` force-includes it into BOTH

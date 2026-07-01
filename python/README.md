@@ -1,6 +1,6 @@
 # agent-input-sanitizer (Python client)
 
-A thin Python bridge to the [`agent-input-sanitizer`](https://github.com/alexander-turner/agent-input-sanitizer)
+A thin Python bridge to the [`agent-input-sanitizer`](https://github.com/AlexanderMattTurner/agent-input-sanitizer)
 Node.js CLI. The sanitization logic has a single source of truth — the
 JavaScript in `src/` — so this package shells out to the CLI rather than
 re-implementing it, giving a Python pipeline byte-identical verdicts with no
