@@ -21,7 +21,7 @@ name = "agent-input-sanitizer"
 # agent-input-sanitizer` and `npm i agent-input-sanitizer` will report different
 # numbers — that is expected, not drift. Keep this a valid PEP 440 release; the
 # guard in tests/test_python_version.py fails the build on a malformed edit.
-version = "1.2.6"
+version = "1.3.0"
 description = "Python client for agent-input-sanitizer: a thin bridge to the Node.js CLI for byte-identical sanitization verdicts."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,8 @@ Issues = "https://github.com/alexander-turner/agent-input-sanitizer/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_input_sanitizer"]
+# The invisible-charset SSOT is data, not code, so it is not auto-included.
+artifacts = ["agent_input_sanitizer/data/invisible-charset.json"]
 
 [tool.hatch.build.targets.sdist]
 include = ["agent_input_sanitizer", "README.md"]
