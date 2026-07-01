@@ -185,18 +185,21 @@ const ZWJ = 0x200d;
 // NOT part of a joined cluster — so an ordinary single joiner per word is kept.
 export const CONSECUTIVE_JOINER_CAP = 8;
 
-// Floor on the document-wide preserve budget. The Joining_Type gate strips
-// joiners that do no rendering work regardless of count, so the bulk covert
-// channel (ZWNJ scattered through Latin/ASCII/mixed text) is closed by shape,
-// not by counting. What remains is the residual channel of MEANINGFUL joiners
-// stuffed into genuine cursive/Indic cover text — each individually legitimate,
+// Floor on the document-wide preserve budget, shared by both preserve kinds
+// (see `kind` in analyzeCarve: joiners AND presentation selectors draw from
+// the same counter). The Joining_Type gate strips joiners that do no
+// rendering work regardless of count, so the bulk covert channel (ZWNJ
+// scattered through Latin/ASCII/mixed text) is closed by shape, not by
+// counting. What remains is the residual channel of MEANINGFUL joiners/
+// selectors stuffed into genuine cover text — each individually legitimate,
 // so indistinguishable one at a time. THIS budget (with CONSECUTIVE_JOINER_CAP
 // and SCATTERED_THRESHOLD) is the explicit, tunable bound on that residual
 // channel; it is not derived, and tightening it trades covert-channel width for
-// clipping genuinely dense prose. The allowance is proportional to visible
-// length (PRESERVED_JOINER_PER_VISIBLE), never below this floor; the floor keeps
-// short but joiner-dense strings (a lone emoji ZWJ sequence, a two-word Persian
-// phrase) un-flagged. Past the allowance the surplus is stripped AND reported.
+// clipping genuinely dense prose or emoji-dense text. The allowance is
+// proportional to visible length (PRESERVED_JOINER_PER_VISIBLE), never below
+// this floor; the floor keeps short but joiner/selector-dense strings (a lone
+// emoji ZWJ sequence, a two-word Persian phrase) un-flagged. Past the
+// allowance the surplus is stripped AND reported.
 export const TOTAL_PRESERVED_JOINER_BUDGET = 16;
 
 // Visible code points required per additional preserved joiner above the floor.

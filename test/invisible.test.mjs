@@ -677,6 +677,23 @@ describe("document-wide preserved-joiner budget", () => {
     assert.deepEqual(found, [CATEGORY.CF]);
   });
 
+  it("standalone presentation selectors (no joiner in the document) share the same budget", () => {
+    // The budget counts every preserved item — joiners AND presentation
+    // selectors — across the whole document, not per-kind. N gap-separated
+    // pictograph+VS16 pairs with NO ZWNJ/ZWJ anywhere still hit the same cap:
+    // over-strip beats under-strip even for a purely selector-dense document.
+    const pictographPlusSelector = cp(0x2764) + cp(0xfe0f) + " ";
+    const input = pictographPlusSelector.repeat(N);
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(countOf(input, cp(0xfe0f)), N);
+    assert.equal(
+      countOf(cleaned, cp(0xfe0f)),
+      TOTAL_PRESERVED_JOINER_BUDGET,
+      "preserved selector count must not exceed the shared budget",
+    );
+    assert.deepEqual(found, [CATEGORY.VARIATION_SELECTORS]);
+  });
+
   it("preserves exactly the budget at the boundary (none stripped, not flagged)", () => {
     // Exactly TOTAL_PRESERVED_JOINER_BUDGET joiners, one per gap-separated
     // cluster: all preserved, nothing reported. Pins the `<` boundary so a
