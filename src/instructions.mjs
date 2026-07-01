@@ -187,6 +187,17 @@ export function scanText(content) {
   // a payload. Always evaluated; chars already in a run are excluded so they
   // aren't double-counted. Emoji presentation selectors (U+FE0F on a real
   // pictograph) are discounted so an emoji-dense benign doc doesn't over-fire.
+  //
+  // Asymmetry (deliberate, benign): the minuend discounts emoji selectors/joiners
+  // EVERYWHERE, while `runChars` is each run's RAW length. A long run is
+  // ≥LONG_RUN_THRESHOLD *consecutive* invisibles, and an emoji selector/joiner is
+  // always flanked by a visible pictograph — so it cannot sit inside such a run,
+  // and the two counts describe disjoint chars in practice. In the pathological
+  // case that they don't (e.g. a run of stacked VS16), the raw `runChars`
+  // subtracts at most a few more than the minuend added, biasing `scattered`
+  // slightly LOW — a false negative, the precision-favoring direction, never a
+  // spurious finding. `scattered` may even go negative; the `>=` gate treats that
+  // as "no scatter", which is correct.
   const scattered = countInvisibleForScatter(content) - runChars;
   if (scattered >= SCATTERED_THRESHOLD) {
     findings.push({
