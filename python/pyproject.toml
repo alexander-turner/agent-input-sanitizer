@@ -47,6 +47,8 @@ artifacts = ["agent_input_sanitizer/_bundled/sanitize-cli.mjs"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_input_sanitizer"]
+# The invisible-charset SSOT is data, not code, so it is not auto-included.
+artifacts = ["agent_input_sanitizer/data/invisible-charset.json"]
 
 [tool.hatch.build.targets.sdist]
 include = ["agent_input_sanitizer", "README.md"]
