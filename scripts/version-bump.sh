@@ -60,7 +60,16 @@ max_version() {
 
 # Get the latest published version from npm (source of truth)
 PACKAGE_NAME=$(node -p "require('./package.json').name")
-CURRENT_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "0.0.0")
+NPM_VIEW_RC=0
+NPM_VIEW_OUTPUT=$(npm view "$PACKAGE_NAME" version 2>&1) || NPM_VIEW_RC=$?
+if [ "$NPM_VIEW_RC" -eq 0 ]; then
+  CURRENT_VERSION="$NPM_VIEW_OUTPUT"
+elif echo "$NPM_VIEW_OUTPUT" | grep -q "E404"; then
+  CURRENT_VERSION="0.0.0"
+else
+  log "version-bump: npm view failed unexpectedly (not E404): $NPM_VIEW_OUTPUT"
+  exit 1
+fi
 log "Current npm version: $CURRENT_VERSION"
 
 # Find the latest version tag to determine which commits to analyze
