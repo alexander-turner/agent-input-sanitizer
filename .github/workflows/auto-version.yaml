@@ -45,6 +45,10 @@ jobs:
         uses: ./.github/actions/setup-base-env
         with:
           registry-url: https://registry.npmjs.org
+          # No caching in the publish path (zizmor cache-poisoning) — a poisoned
+          # pnpm store cache could tamper with the esbuild bundle shipped to both
+          # npm and PyPI, same rationale as the uv `enable-cache: false` below.
+          cache: "false"
 
       - name: Auto Version Bump and Publish
         id: bump
