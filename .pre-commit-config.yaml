@@ -49,31 +49,19 @@ repos:
   # pinned to mutable names. No published tag yet, so rev is the main HEAD SHA
   # (pinned per the "SHA-pin third-party sources" rule). ALL hooks enabled:
   # Tier 1 (honesty + identity), Tier 2 (opinionated — this repo follows the
-  # decide/reporter + cancel-in-progress conventions they assume), and Extras.
+  # decide/reporter + cancel-in-progress conventions they assume; its
+  # check-required-reporter forces the `# required-check: true|false` markers
+  # sync-required-checks.yaml applies to the branch ruleset), and Extras.
+  # Tier aggregates over per-check ids so a check added upstream to a tier
+  # applies here with no config change; check-symlinks is the one hook outside
+  # any tier, so it stays listed.
   - repo: https://github.com/alexander-turner/ci-truth-serum
-    rev: 55b3c2af0b83f77f15eba92aac743bdf8ff254be # main (no tagged release yet)
+    rev: 421e708a4fa98df667c708fdb4c43570ab620bb6 # main (no tagged release yet)
     hooks:
-      # Tier 1 · Honesty
-      - id: check-workflow-pipefail
-      - id: check-exit-suppression
-      - id: check-stderr-suppression
-      - id: check-pr-paths
-      # Tier 1 · Identity
-      - id: check-pinned-base-images
-      - id: check-pinned-downloads
-      # Tier 2 · Opinionated
-      - id: check-always-reporter
-      # Forces a `# required-check: true|false` marker on every always() reporter;
-      # sync-required-checks.yaml reads those markers to rewrite the branch
-      # ruleset, so the two can't drift.
-      - id: check-required-reporter
-      - id: check-inline-run-length
-      - id: check-concurrency
-      - id: check-static-concurrency
-      # Extras
+      - id: check-tier1
+      - id: check-tier2
+      - id: check-extras
       - id: check-symlinks
-      - id: check-unnamed-regex-groups
-      - id: check-global-stdio-swap
 
   - repo: local
     hooks:
