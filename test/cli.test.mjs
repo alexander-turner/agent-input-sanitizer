@@ -513,8 +513,19 @@ describe("CLI: worker bounds per-line buffering to the input cap", () => {
     // 256 MiB payload. A buffering impl would add ~payloadBytes here; the bound
     // adds only the cap plus transient chunk/GC slack. The 1/4-payload ceiling
     // sits far below a buffering peak yet comfortably above GC headroom, so the
-    // assertion separates the two implementations without flaking. /proc-less
-    // hosts report 0 for both; skip the bound only then.
+    // assertion separates the two implementations without flaking. /proc is
+    // Linux-only, so a genuinely /proc-less host (non-Linux) legitimately
+    // reports 0 for both and skips the bound. On Linux, /proc IS expected to
+    // be available, so a zero-sample run there is a broken sampler, not a
+    // legitimate skip — assert loudly rather than silently no-op the entire
+    // memory-bound claim this test exists to make.
+    if (process.platform === "linux")
+      assert.ok(
+        baseline.peakRssBytes > 0 && peakRssBytes > 0,
+        "RSS sampler landed no samples on Linux (baseline=" +
+          `${baseline.peakRssBytes}, payload=${peakRssBytes}) — the memory-bound ` +
+          "assertion below did not run",
+      );
     if (peakRssBytes > 0 && baseline.peakRssBytes > 0)
       assert.ok(
         peakRssBytes - baseline.peakRssBytes < payloadBytes / 4,

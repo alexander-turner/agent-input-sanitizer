@@ -22,6 +22,7 @@ import {
   deleteVerbatimSpans,
   MAX_DEPTH,
 } from "../src/output.mjs";
+import { SGR_RE } from "../src/invisible.mjs";
 import { fcRunOptions, cp } from "./test-helpers.mjs";
 
 const runOptions = fcRunOptions({ numRuns: 300 });
@@ -87,10 +88,29 @@ describe("property: sanitizeText invariants (Layer 1 only)", () => {
         );
         // `modified` faithfully tracks whether bytes changed.
         assert.equal(r.modified, r.cleaned !== input);
-        // Any change carries at least one operator-visible warning (or the
-        // SGR carve-out note) — content never vanishes silently.
-        if (r.cleaned !== input)
-          assert.ok(r.warnings.length > 0 || r.sgrNote === true);
+        // Any change carries at least one operator-visible warning, UNLESS
+        // the entire diff is display-only SGR color (the `sgrNote`
+        // carve-out) — content never vanishes silently. Deciding "diff is
+        // SGR-only" by stripping SGR_RE from both sides and comparing (not
+        // just trusting `r.sgrNote` alone) closes a regression a plain
+        // `warnings.length > 0 || r.sgrNote === true` disjunction would miss:
+        // a bug that sets sgrNote=true on a NON-SGR change (or misroutes a
+        // real warning into the note) would satisfy the old OR while genuine
+        // content removal went completely unwarned.
+        if (r.cleaned !== input) {
+          const diffIsSgrOnly =
+            input.replace(SGR_RE, "") === r.cleaned.replace(SGR_RE, "");
+          if (diffIsSgrOnly && r.sgrNote === true) {
+            // Legitimate carve-out: the only change was cosmetic SGR color,
+            // reported via the terse note instead of a warning.
+          } else {
+            assert.ok(
+              r.warnings.length > 0,
+              "content changed beyond SGR-only styling but no warning was " +
+                `emitted (sgrNote=${r.sgrNote}, diffIsSgrOnly=${diffIsSgrOnly})`,
+            );
+          }
+        }
       }),
       runOptions,
     );

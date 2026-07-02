@@ -122,11 +122,182 @@ const stripImportsAndComments = (source) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 
+// A name appearing ANYWHERE in a file that merely CONTAINS an `fc.assert(`/
+// `fc.property(` call somewhere is not evidence that a PROPERTY exercises
+// that name — this repo mixes a handful of property tests into files that
+// are otherwise hundreds of lines of ordinary example-based `it(...)` tests
+// (test/cli.test.mjs, test/html.test.mjs, test/invisible.test.mjs), so an
+// ordinary example test calling e.g. `sanitize(...)` would otherwise satisfy
+// "coverage" for `sanitize` even after its actual property test was deleted.
+// Narrow the match to only the source WITHIN each `fc.assert(...)` /
+// `fc.property(...)` call (balanced-paren scan from the callee's opening
+// paren to its matching close) so a name only counts when it is textually
+// inside a real property/fuzz invocation.
+
+// Several suites (confusables-property, html-property, prompt-property,
+// view-map-property) factor the boilerplate into a one-line local wrapper —
+// e.g. `const check = (arbitrary, predicate) =>\n  fc.assert(fc.property(arbitrary, predicate), runOptions);`
+// — and drive every property through `check(arb, (x) => ...)`. The predicate
+// closure (where a required name actually gets referenced) then sits inside
+// the WRAPPER's call, not literally inside `fc.assert(...)`, so a matcher
+// that only recognizes the literal fc.* callees would false-negative on
+// every one of those suites. Detect such local wrappers by their definition
+// (a same-line-or-wrapped arrow whose body directly calls fc.assert/
+// fc.property/fc.asyncProperty) and treat calls to them as property
+// invocations too.
+const WRAPPER_DEF_RE =
+  /\bconst\s+(\w+)\s*=\s*\([^)]*\)\s*=>\s*fc\.(?:assert|property|asyncProperty)\(/g;
+
+// Other suites (html-property's containsForbiddenNode/isHiddenElement,
+// rehydrate-semantic-fuzz's editCall/rehydrateRedacted and
+// ioFor->mkView->occurrences) call the required name only from INSIDE a
+// locally-defined helper function's own body, one or more indirection
+// levels away from the fc.assert/property call site itself. A name used
+// only via such a helper is exercised by the fuzz run exactly as much as one
+// referenced directly, so its OWN definition body is pulled in transitively
+// below (extractDefinitions + the fixpoint loop in extractFcCallSpans).
+const FUNCTION_DEF_RE =
+  /\bfunction\s+(\w+)\s*\(|\b(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(/g;
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** @returns {number} index of the matching close paren, or -1 */
+const findMatchingParen = (code, openIdx) => {
+  let depth = 0;
+  for (let i = openIdx; i < code.length; i++) {
+    if (code[i] === "(") depth++;
+    else if (code[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+};
+
+/** @returns {number} index of the matching close brace, or -1 */
+const findMatchingBrace = (code, openIdx) => {
+  let depth = 0;
+  for (let i = openIdx; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Finds every named `function NAME(...) {...}` and
+ * `const/let/var NAME = (...) => ...` (block- or expression-bodied)
+ * definition in `code` and returns a Map from name to its full [start, end)
+ * source span (declaration keyword through the body's end).
+ * @param {string} code
+ * @returns {Map<string, [number, number]>}
+ */
+const extractDefinitions = (code) => {
+  const defs = new Map();
+  for (const match of code.matchAll(FUNCTION_DEF_RE)) {
+    const name = match[1] ?? match[2];
+    const isFunctionKeyword = match[1] !== undefined;
+    const parenOpen = match.index + match[0].length - 1;
+    const parenClose = findMatchingParen(code, parenOpen);
+    if (parenClose === -1) continue;
+    let i = parenClose + 1;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    if (isFunctionKeyword) {
+      if (code[i] !== "{") continue;
+      const braceClose = findMatchingBrace(code, i);
+      if (braceClose === -1) continue;
+      defs.set(name, [match.index, braceClose + 1]);
+      continue;
+    }
+    // const/let/var NAME = (...) — only a function definition if an arrow
+    // follows the params; `const x = (a + b) * c;` must NOT match.
+    if (code.slice(i, i + 2) !== "=>") continue;
+    i += 2;
+    while (i < code.length && /\s/.test(code[i])) i++;
+    if (code[i] === "{") {
+      const braceClose = findMatchingBrace(code, i);
+      if (braceClose === -1) continue;
+      defs.set(name, [match.index, braceClose + 1]);
+      continue;
+    }
+    // Expression-bodied arrow: scan to the top-level (depth-0) terminating
+    // semicolon so a body containing its own (), {}, [] doesn't cut short.
+    let depth = 0;
+    let j = i;
+    for (; j < code.length; j++) {
+      const c = code[j];
+      if (c === "(" || c === "{" || c === "[") depth++;
+      else if (c === ")" || c === "}" || c === "]") depth--;
+      else if (c === ";" && depth === 0) break;
+    }
+    defs.set(name, [match.index, Math.min(j + 1, code.length)]);
+  }
+  return defs;
+};
+
+/**
+ * Concatenates the source spanned by every `fc.assert(...)`, `fc.property(...)`,
+ * `fc.asyncProperty(...)` call, every call to a local wrapper function whose
+ * own body directly invokes one of those (WRAPPER_DEF_RE), AND — by
+ * fixpoint — the full definition body of any locally-defined helper
+ * function called from within source already pulled in (so a name used only
+ * inside a helper-of-a-helper, e.g. an `editCall(...)` invoked inside a
+ * property that itself calls `rehydrateRedacted(...)`, still counts). Each
+ * direct call span runs from the callee's opening paren to its balanced
+ * closing paren.
+ * @param {string} code
+ * @returns {string}
+ */
+const extractFcCallSpans = (code) => {
+  const wrapperNames = new Set(
+    [...code.matchAll(WRAPPER_DEF_RE)].map((m) => m[1]),
+  );
+  const calleeAlternation = [
+    "fc\\.assert",
+    "fc\\.property",
+    "fc\\.asyncProperty",
+    ...[...wrapperNames].map(escapeRegExp),
+  ].join("|");
+  const callStartRe = new RegExp(`\\b(?:${calleeAlternation})\\(`, "g");
+
+  /** @type {[number, number][]} */
+  const included = [];
+  for (const match of code.matchAll(callStartRe)) {
+    const start = match.index;
+    const parenOpen = start + match[0].length - 1;
+    const parenClose = findMatchingParen(code, parenOpen);
+    if (parenClose === -1) continue;
+    included.push([start, parenClose + 1]);
+  }
+
+  const defs = extractDefinitions(code);
+  const pulledIn = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const currentText = included.map(([s, e]) => code.slice(s, e)).join("\n");
+    for (const [name, span] of defs) {
+      if (pulledIn.has(name)) continue;
+      if (new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`).test(currentText)) {
+        pulledIn.add(name);
+        included.push(span);
+        changed = true;
+      }
+    }
+  }
+
+  return included.map(([s, e]) => code.slice(s, e)).join("\n");
+};
+
 const fuzzFiles = readdirSync(testDir)
   .filter((name) => name.endsWith(".test.mjs") && name !== selfName)
   .map((name) => {
     const source = readFileSync(path.join(testDir, name), "utf8");
-    return { name, source, code: stripImportsAndComments(source) };
+    const code = stripImportsAndComments(source);
+    return { name, source, code, fcCode: extractFcCallSpans(code) };
   })
   .filter((file) => file.source.includes("fc.assert("));
 
@@ -167,6 +338,22 @@ describe("fuzz-coverage obligation gate", () => {
     assert.ok(FUZZ_REQUIRED.length > 0);
   });
 
+  it("the fc-call span extractor actually finds spans (gate is not vacuous)", () => {
+    // Guards against the extractor silently matching nothing (e.g. a
+    // refactor to a callee spelling FC_CALL_START_RE no longer matches),
+    // which would make every "is referenced by a fast-check suite" check
+    // below fail closed for the wrong reason instead of proving coverage.
+    const totalSpanLength = fuzzFiles.reduce(
+      (sum, file) => sum + file.fcCode.length,
+      0,
+    );
+    assert.ok(
+      totalSpanLength > 0,
+      "extractFcCallSpans found no fc.assert/fc.property spans in any " +
+        "discovered fuzz file — the span-narrowed match would pass vacuously",
+    );
+  });
+
   for (const name of FUZZ_REQUIRED) {
     it(`'${name}' is a real exported function`, () => {
       assert.equal(
@@ -178,10 +365,14 @@ describe("fuzz-coverage obligation gate", () => {
 
     it(`'${name}' is referenced by a fast-check suite`, () => {
       const wordRe = new RegExp(`\\b${name}\\b`);
-      const hits = fuzzFiles.filter((file) => wordRe.test(file.code));
+      // Match only within the text spans of actual fc.assert(...)/
+      // fc.property(...) calls, not anywhere in a file that merely contains
+      // such a call elsewhere (see extractFcCallSpans above).
+      const hits = fuzzFiles.filter((file) => wordRe.test(file.fcCode));
       assert.ok(
         hits.length > 0,
-        `${name} handles untrusted input but no property/fuzz suite references it`,
+        `${name} handles untrusted input but no property/fuzz suite's ` +
+          `fc.assert/fc.property call references it`,
       );
     });
   }
@@ -210,7 +401,7 @@ describe("semantic-fuzz obligation gate", () => {
   for (const name of SEMANTIC_FUZZ_REQUIRED) {
     it(`'${name}' is referenced by a *-semantic-fuzz.test.mjs suite`, () => {
       const wordRe = new RegExp(`\\b${name}\\b`);
-      const hits = semanticFuzzFiles.filter((file) => wordRe.test(file.code));
+      const hits = semanticFuzzFiles.filter((file) => wordRe.test(file.fcCode));
       assert.ok(
         hits.length > 0,
         `${name} is a precision-sensitive entry point (structural fuzzing alone ` +
