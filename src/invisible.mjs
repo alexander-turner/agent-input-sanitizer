@@ -86,17 +86,24 @@ export const STRIP = new RegExp(
 );
 
 // SGR (Select Graphic Rendition): colors, bold, reset. The grammar is closed:
-// params are [0-9;]* and the final byte is `m`, so a match can only restyle
-// text, never reposition the cursor, erase, or smuggle an OSC string. A SGR
-// sequence has TWO encodings: the 7-bit `ESC [ … m` and the 8-bit C1 form where
-// a single U+009B (CSI) replaces `ESC [`. Both must be recognized — otherwise a
-// C1-introduced `U+009B 31m … 0m` is pure color yet is misread as a non-SGR
-// payload (or, worse, mistaken for SGR-only when its introducer was a C1 CSI
-// that isSgrOnly's ESC-only test never saw). Text is "SGR-only" when removing
+// params are [0-9;:]* and the final byte is `m`, so a match can only restyle
+// text, never reposition the cursor, erase, or smuggle an OSC string. `:` is
+// included alongside `;` because ITU T.416 colon-separated SGR sub-parameters
+// (truecolor `ESC[38:2:255:0:0m`, as emitted by tmux/kitty/mintty) are pure
+// display-only SGR too — excluding them left a benign colon-form sequence
+// misread as non-SGR. A SGR sequence has TWO encodings: the 7-bit `ESC [ … m`
+// and the 8-bit C1 form where a single U+009B (CSI) replaces `ESC [` — spelled
+// here as the `\x9b` escape (never a raw literal byte in source: an
+// undetectable-by-eye invisible byte in a regex literal is a correctness
+// landmine for the next person who touches this line without a hex dump).
+// Both encodings must be recognized — otherwise a C1-introduced
+// `U+009B 31m … 0m` is pure color yet is misread as a non-SGR payload (or,
+// worse, mistaken for SGR-only when its introducer was a C1 CSI that
+// isSgrOnly's ESC-only test never saw). Text is "SGR-only" when removing
 // these leaves no ANSI control introducer at all — a lone or partial escape is
 // therefore not SGR-only.
 // eslint-disable-next-line no-control-regex -- matching ESC-led sequences is the point
-export const SGR_RE = /(?:\x1b\[|)[0-9;]*m/g;
+export const SGR_RE = /(?:\x1b\[|\x9b)[0-9;:]*m/g;
 
 // The raw ANSI control introducers isSgrOnly must treat as NON-SGR after SGR
 // removal: 7-bit ESC (U+001B) and the entire 8-bit C1 control block
@@ -230,6 +237,23 @@ export const LINGUISTIC_SCRIPTS = [
 // Left side of an emoji joiner: a pictograph or a skin-tone modifier (a base
 // emoji may carry a modifier before the joiner, e.g. a health-worker sequence).
 const EMOJI_LEFT = /[\p{Extended_Pictographic}\p{Emoji_Modifier}]/u;
+// Left side of a presentation selector (VS15/VS16): everything EMOJI_LEFT
+// accepts, PLUS the three keycap bases (digit, `#`, `*`) that Unicode's
+// keycap sequence grammar allows before VS16 + U+20E3 COMBINING ENCLOSING
+// KEYCAP (1️⃣ #️⃣ *️⃣ … 9️⃣). None of those
+// bases is Extended_Pictographic or Emoji_Modifier, so EMOJI_LEFT alone
+// misses them and the VS16 in a keycap gets stripped as a bare junk
+// selector, corrupting the glyph. A keycap base is accepted ONLY for the
+// presentation-selector check (isEmojiPresentationSelector) — never folded
+// into EMOJI_LEFT itself — so it cannot also loosen the ZWJ emoji-sequence
+// carve-out (isPreservedJoiner): digits/`#`/`*` do not legitimately precede
+// a ZWJ. We preserve VS16 after a keycap base even without checking for a
+// trailing U+20E3: failing open here (never stripping a VS16 that MIGHT be
+// part of a keycap) beats failing closed (mangling a real keycap glyph),
+// and a keycap base + VS16 with no combining keycap after it is still just
+// an ordinary, harmless "digit rendered with emoji presentation".
+const PRESENTATION_SELECTOR_LEFT =
+  /[\p{Extended_Pictographic}\p{Emoji_Modifier}0-9#*]/u;
 // Right side of an emoji joiner is always the next component's base pictograph.
 const EMOJI_BASE = /\p{Extended_Pictographic}/u;
 // A variation selector legitimately sits between a base pictograph and a
@@ -332,17 +356,17 @@ function isPreservedJoiner(cps, i) {
 
 /**
  * True when `cps[i]` is a presentation selector (VS15 U+FE0E or VS16 U+FE0F)
- * directly after a pictograph/skin-tone modifier — part of a visible glyph,
- * not a hidden VS run, so it is preserved (a longer selector run still
- * surfaces: the next selector's left neighbour is itself a selector, not a
- * pictograph).
+ * directly after a pictograph/skin-tone modifier OR a keycap base
+ * (digit/`#`/`*`) — part of a visible glyph, not a hidden VS run, so it is
+ * preserved (a longer selector run still surfaces: the next selector's left
+ * neighbour is itself a selector, not a pictograph/keycap base).
  * @param {string[]} cps @param {number} i
  * @returns {boolean}
  */
 function isEmojiPresentationSelector(cps, i) {
   return (
     PRESENTATION_SELECTORS.has(/** @type {number} */ (cps[i].codePointAt(0))) &&
-    EMOJI_LEFT.test(cps[i - 1] ?? "")
+    PRESENTATION_SELECTOR_LEFT.test(cps[i - 1] ?? "")
   );
 }
 

@@ -28,18 +28,34 @@ const CONTROL_INTRODUCER_RE = /[\u001b\u0080-\u009f]/g;
 // body) would let that payload survive into the model's view, so the OSC branch
 // consumes the introducer, the whole body, AND the terminator as one unit.
 //
-// Two alternatives, tried in order: (1) a properly TERMINATED string — a body
-// of bytes that no terminator can start with (the negated class makes that run
-// unambiguous and backtrack-free), then a terminator; (2) anything else from
-// the introducer to END-OF-STRING (`[\s\S]*$`). Alternative 2 is the fail-closed
-// catch-all: an UNTERMINATED introducer, or one whose only "terminator" is an
-// interior bare ESC (which is not a valid ST), drops the entire dangling
-// remainder rather than leaving the C1-OSC introducer (U+009D) and its payload
-// behind for the next pass to mis-handle (that residue broke idempotence). Both
-// alternatives are linear, so the branch stays linear.
+// Three alternatives, tried in order:
+//   1. a properly TERMINATED string — a body of bytes that no terminator can
+//      start with (the negated class makes that run unambiguous and
+//      backtrack-free), then a terminator (ST or BEL).
+//   2. an ABORTED string — the body runs up to (but does NOT consume) an
+//      interior bare ESC or a nested C1-OSC introducer (U+009D) that is not
+//      itself part of a valid terminator. Per ECMA-48/xterm, a bare ESC (one
+//      not immediately followed by `\` to form ST) aborts the OSC string in
+//      progress — the terminal drops back to processing that ESC as the start
+//      of a NEW sequence, and everything after it is normal text/escapes, not
+//      part of this OSC's payload. Consuming only up to the lookahead (not
+//      the ESC/U+009D itself) leaves it for the next position in this same
+//      `.replace(ANSI_RE, ...)` scan to match as its own sequence (or, if it
+//      doesn't complete one, for the residual C1 sweep in applyLayer1 to
+//      remove just that one introducer byte) — so an interior ESC can no
+//      longer delete the rest of the document (it used to fall through to
+//      alternative 3 below and consume everything to EOS).
+//   3. anything else from the introducer to END-OF-STRING (`[\s\S]*$`) — the
+//      fail-closed catch-all for a GENUINELY unterminated string: no ST, BEL,
+//      interior ESC, or nested OSC intro anywhere in the remainder, so there
+//      is truly nothing left to hand to a later position. Reached only when
+//      alternatives 1 and 2 both fail to find their respective triggers.
+// All three are linear (bounded lookahead / no nested quantifiers), so the
+// branch stays linear.
 const OSC_INTRO = "(?:\\u001b\\]|\\u009d)";
 const OSC_TERM = "(?:\\u001b\\\\|\\u009c|\\u0007)";
-const OSC_BRANCH = `${OSC_INTRO}(?:[^\\u0007\\u001b\\u009c\\u009d]*${OSC_TERM}|[\\s\\S]*$)`;
+const OSC_BODY = "[^\\u0007\\u001b\\u009c\\u009d]";
+const OSC_BRANCH = `${OSC_INTRO}(?:${OSC_BODY}*${OSC_TERM}|${OSC_BODY}*(?=[\\u001b\\u009d])|${OSC_BODY}*$)`;
 
 // CSI / two-byte ESC sequences (cursor moves, erase, SGR color, charset/DEC
 // selectors): an introducer, a bounded private-intro run, optional numeric
@@ -55,8 +71,26 @@ const OSC_BRANCH = `${OSC_INTRO}(?:[^\\u0007\\u001b\\u009c\\u009d]*${OSC_TERM}|[
 // (CodeQL js/polynomial-redos). A constant bound makes the intro a constant
 // factor, so the whole match is linear; a real sequence never carries more than
 // a couple of intro bytes.
+//
+// Params allow BOTH `;` (standard parameter separator) and `:` (ITU T.416
+// colon-separated SGR sub-parameters, e.g. truecolor `ESC[38:2:255:0:0m` as
+// emitted by tmux/kitty/mintty) — legitimate, display-only ANSI that must not
+// leave a colon-parameter residue behind.
+//
+// The final-byte class deliberately excludes `\d`: per ECMA-48, CSI final
+// bytes occupy 0x40–0x7E (letters and a handful of punctuation) while digits
+// are PARAMETER bytes and can never terminate a sequence — an unterminated
+// `ESC[` therefore must not be allowed to eat trailing visible digits (e.g.
+// `ESC[2024 report` is NOT `ESC[` + final-byte `2` + literal `024 report`; it
+// is an incomplete CSI intro that the residual sweep in applyLayer1 cleans up,
+// leaving "2024 report" intact). `=`, `<`, `>` are excluded for the same
+// reason: 0x3C–0x3F (`<=>?`) are private PARAMETER-prefix bytes, not final
+// bytes, per ECMA-48 § 5.4 — `?` already lives in the private-intro class
+// above; `<=>` were never valid finals and including them let a private-marker
+// sequence terminate one byte too early. `~` (0x7E) IS a real final byte (vt220
+// function-key sequences, e.g. `ESC[3~` for Delete) and is kept.
 const CSI_BRANCH =
-  "[\\u001b\\u009b][[()#;?]{0,12}(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~])";
+  "[\\u001b\\u009b][[()#;?]{0,12}(?:(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[A-PR-TZcf-ntqry~])";
 
 // Full ANSI escape grammar (OSC first so `ESC]` / C1-OSC is consumed as a whole
 // string, not split by the CSI branch), not just SGR: the Layer-1 guarantee is

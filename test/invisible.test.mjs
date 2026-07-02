@@ -28,7 +28,7 @@ import {
   PRESERVED_JOINER_PER_VISIBLE,
   LINGUISTIC_SCRIPTS,
 } from "../src/invisible.mjs";
-import { applyLayer1 } from "../src/layer1.mjs";
+import { applyLayer1, stripAnsiFully } from "../src/layer1.mjs";
 import { fcRunOptions, cp } from "./test-helpers.mjs";
 
 const ZWNJ = cp(0x200c);
@@ -309,6 +309,50 @@ describe("stripInvisible: ZWNJ/ZWJ linguistic carve-out", () => {
     assert.deepEqual(found, [CATEGORY.VARIATION_SELECTORS]);
   });
 
+  // Keycap sequences (1️⃣ #️⃣ *️⃣ … 9️⃣) are `base + VS16 (U+FE0F) + U+20E3
+  // COMBINING ENCLOSING KEYCAP`, where base is a digit, `#`, or `*` — none of
+  // which is Extended_Pictographic or Emoji_Modifier. Regression: the
+  // presentation-selector carve-out only recognized a pictograph/modifier
+  // base, so the VS16 in every keycap failed the carve-out and was stripped
+  // as a bare junk selector, corrupting the glyph (splitting "1️⃣" into a bare
+  // "1" + a dangling combining keycap mark).
+  for (const [name, base] of [
+    ["digit 1", "1"],
+    ["digit 0", "0"],
+    ["digit 9", "9"],
+    ["hash", "#"],
+    ["asterisk", "*"],
+  ]) {
+    it(`preserves the VS16 in a keycap sequence (${name})`, () => {
+      const input = `${base}${cp(0xfe0f)}${cp(0x20e3)}`;
+      const { cleaned, found } = stripInvisibleWithReport(input);
+      assert.equal(cleaned, input);
+      assert.deepEqual(found, []);
+    });
+  }
+
+  it("preserves a keycap base + VS16 even with no trailing combining keycap (fail open on ambiguity)", () => {
+    // A keycap base followed by VS16 with nothing after it is not a complete
+    // keycap glyph, but per the fail-open doctrine we still do not strip the
+    // VS16 — an ambiguous case is better left as harmless "digit rendered
+    // with emoji presentation" than mangled.
+    const input = `1${cp(0xfe0f)}`;
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, input);
+    assert.deepEqual(found, []);
+  });
+
+  it("does not widen the ZWJ emoji-sequence carve-out to keycap bases", () => {
+    // The keycap fix is scoped to the presentation-selector check only. A
+    // digit followed by ZWJ is never a legitimate emoji ZWJ sequence (the
+    // ZWJ's left neighbour must be a pictograph/modifier), so it must still
+    // be stripped as payload.
+    const input = `1${ZWJ}a`;
+    const { cleaned, found } = stripInvisibleWithReport(input);
+    assert.equal(cleaned, "1a");
+    assert.deepEqual(found, [CATEGORY.CF]);
+  });
+
   // Payload contexts: each is still stripped AND reported in `found`.
   for (const [name, input, expected] of [
     ["ZWNJ between Latin", `a${ZWNJ}b`, "ab"],
@@ -542,6 +586,24 @@ describe("isSgrOnly", () => {
     it(`is false for a residual C1 introducer U+${c1.toString(16).toUpperCase()}`, () =>
       assert.equal(isSgrOnly(`${cp(c1)}payload`), false));
   }
+
+  // ITU T.416 colon-separated SGR sub-parameters (tmux/kitty/mintty truecolor,
+  // e.g. `ESC[38:2:255:0:0m`) are pure display-only SGR — legitimate, benign
+  // content. Regression: SGR_RE's parameter class only allowed `;`, so a
+  // colon-form sequence was misread as non-SGR (isSgrOnly false) and, before
+  // the CSI_BRANCH digit fix, left junk residue behind after stripping.
+  it("is true for a 7-bit colon-form truecolor SGR sequence", () =>
+    assert.equal(
+      isSgrOnly(`${cp(0x1b)}[38:2:255:0:0mred${cp(0x1b)}[0m`),
+      true,
+    ));
+  it("is true for a C1-introduced colon-form truecolor SGR sequence", () =>
+    assert.equal(isSgrOnly(`${cp(0x9b)}38:2:255:0:0mred${cp(0x9b)}0m`), true));
+  it("SGR_RE strips a colon-form truecolor sequence, leaving only the text", () =>
+    assert.equal(
+      `${cp(0x1b)}[38:2:255:0:0mred${cp(0x1b)}[0m`.replace(SGR_RE, ""),
+      "red",
+    ));
 });
 
 // ─── LONG_RUN_RE ─────────────────────────────────────────────────────────────
@@ -909,6 +971,126 @@ describe("applyLayer1: OSC strings and C1 sequences", () => {
       ms < 2000,
       `applyLayer1 on a ${input.length}-char adversarial input took ${ms.toFixed(1)}ms (>= 2000ms suggests super-linear backtracking)`,
     );
+  });
+});
+
+// ─── stripAnsiFully: CSI final-byte grammar + OSC interior-ESC abort ─────────
+
+describe("stripAnsiFully: CSI digits are never a final byte", () => {
+  // Per ECMA-48, CSI final bytes occupy 0x40–0x7E; digits are PARAMETER bytes
+  // and can never terminate a sequence. Regression: the final-byte class used
+  // to include `\d`, so an incomplete `ESC[` swallowed following visible
+  // digits as if they were the sequence's final byte, deleting real content
+  // (`ESC[2024 report` used to become ` report` — "2024" gone).
+  it("does not swallow visible digits after an incomplete CSI intro", () => {
+    const cleaned = stripAnsiFully(`${cp(0x1b)}[2024 report`);
+    assert.ok(
+      cleaned.includes("2024 report"),
+      `visible digits were swallowed: ${JSON.stringify(cleaned)}`,
+    );
+  });
+
+  it("applyLayer1 sweeps the residual ESC but the digits/report text survive intact", () => {
+    // The incomplete `ESC[` itself never completes a valid CSI sequence (no
+    // valid final byte follows), so CSI_BRANCH does not match it at all; the
+    // final residual-sweep in applyLayer1 removes the bare ESC control byte,
+    // exactly like the existing "nested split (incomplete residual)" case in
+    // sanitize.test.mjs — the ASCII `[` is not a control byte, so a stray
+    // bracket may remain, but nothing user-visible past the intro is lost.
+    const { cleaned, found } = applyLayer1(`${cp(0x1b)}[2024 report`);
+    assert.ok(!cleaned.includes(cp(0x1b)), "ESC survived");
+    assert.equal(cleaned, "[2024 report");
+    assert.ok(found.includes(CATEGORY.ANSI));
+  });
+
+  it("still fully removes a genuine (complete) CSI sequence with numeric params", () => {
+    // Negative case: a real, TERMINATED CSI sequence (color 32m) must still be
+    // removed in full — the digit-exclusion only affects an incomplete/dangling
+    // intro, not a properly closed sequence.
+    assert.equal(
+      stripAnsiFully(`${cp(0x1b)}[32mhello${cp(0x1b)}[0m`),
+      "hello",
+    );
+  });
+
+  it("still fully removes a cursor-move/erase CSI sequence (non-SGR hazard)", () => {
+    assert.equal(stripAnsiFully(`${cp(0x1b)}[2Jhello`), "hello");
+  });
+
+  // `=`, `<`, `>` (0x3C–0x3F minus `?`) are private PARAMETER-prefix bytes per
+  // ECMA-48 § 5.4, never final bytes; `~` (0x7E) IS a real final byte (vt220
+  // function-key sequences, e.g. Delete = `ESC[3~`) and must still match.
+  it("still removes a vt220 function-key sequence ending in `~`", () => {
+    assert.equal(stripAnsiFully(`${cp(0x1b)}[3~hello`), "hello");
+  });
+});
+
+describe("stripAnsiFully: an interior bare ESC aborts an OSC string in place", () => {
+  // Per ECMA-48/xterm, a bare ESC that is not the start of a valid ST (`ESC\`)
+  // aborts the OSC string in progress — the terminal starts processing that
+  // ESC as a NEW sequence. Regression: OSC_BRANCH's only fallback for "no
+  // terminator found yet" was `[\s\S]*$` (consume to end-of-string), which
+  // fired on an interior bare ESC too, deleting the entire rest of the
+  // document instead of just the OSC's own (now-abandoned) body.
+  it("does not delete the rest of the document when a bare ESC interrupts an OSC body", () => {
+    const cleaned = stripAnsiFully(
+      `${cp(0x1b)}]0;title${cp(0x1b)}[0m the rest of the legit document`,
+    );
+    assert.equal(cleaned, " the rest of the legit document");
+  });
+
+  it("aborts at a nested bare C1-OSC introducer (U+009D) the same way", () => {
+    const C1_OSC = cp(0x9d);
+    const cleaned = stripAnsiFully(`${cp(0x1b)}]0;title${C1_OSC}rest`);
+    // The outer OSC body is aborted at the nested introducer (left for the
+    // engine's next match attempt); the inner introducer then starts its own
+    // (unterminated) OSC match, which is fail-closed-consumed to EOS.
+    assert.equal(cleaned, "");
+  });
+
+  it("still consumes a genuinely unterminated OSC string to end-of-string (fail closed)", () => {
+    // Negative case: no ST/BEL/interior-ESC/nested-intro anywhere — the only
+    // safe behavior for a truly dangling OSC introducer is to drop the whole
+    // dangling remainder, exactly as before this fix.
+    assert.equal(
+      stripAnsiFully(`${cp(0x1b)}]0;UNTERMINATED`),
+      "",
+    );
+  });
+
+  it("still consumes a properly ST-terminated OSC string in full (no change from the fix)", () => {
+    assert.equal(
+      stripAnsiFully(
+        `before${cp(0x1b)}]0;TITLE${cp(0x1b)}\\after`,
+      ),
+      "beforeafter",
+    );
+  });
+});
+
+describe("SGR_RE / CSI param grammar: colon-form sub-parameters", () => {
+  // ITU T.416 colon-separated SGR sub-parameters (tmux/kitty/mintty truecolor)
+  // must be recognized by the CSI grammar too, not just SGR_RE, so a fully
+  // stripped colon-form sequence leaves no junk residue.
+  it("stripAnsiFully removes a colon-form truecolor CSI sequence in full", () => {
+    assert.equal(
+      stripAnsiFully(`${cp(0x1b)}[38:2:255:0:0mred${cp(0x1b)}[0m`),
+      "red",
+    );
+  });
+
+  it("hex-dump hygiene: SGR_RE's source contains no raw invisible C1 byte", () => {
+    // Regression for a raw U+009B literal that once sat between `|` and `)` in
+    // the SGR_RE source (undetectable by eye in an editor/diff) instead of the
+    // explicit `\x9b` escape. Assert on the actual regex source string, not a
+    // grep over the file, so a refactor that reintroduces a raw byte fails
+    // here even if the surrounding text changes.
+    assert.ok(
+      !SGR_RE.source.includes(cp(0x9b)),
+      "SGR_RE.source contains a raw literal U+009B byte, not an escape",
+    );
+    // Positive marker: the escaped form must still be present and functional.
+    assert.equal(`${cp(0x9b)}31mx`.replace(SGR_RE, ""), "x");
   });
 });
 
