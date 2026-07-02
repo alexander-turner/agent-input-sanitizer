@@ -61,4 +61,4 @@ function main() {
   console.log(`wrote ${OUTPUT_PATH} (${extraCodepoints().length} code points)`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) main();

@@ -24,6 +24,7 @@
     "typecheck": "tsc --noEmit",
     "build:types": "tsc -p tsconfig.build.json",
     "prepack": "pnpm build:types",
+    "gen:joining-type": "node scripts/gen-joining-type.mjs",
     "lint": "eslint .",
     "test:mutation": "stryker run",
     "format": "prettier --write .",
