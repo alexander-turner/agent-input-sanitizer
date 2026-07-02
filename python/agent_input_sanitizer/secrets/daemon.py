@@ -171,17 +171,35 @@ def serve(socket_path: str, stop: threading.Event | None = None) -> None:
     with a warm-up scan BEFORE binding, so a bound socket implies a ready daemon.
     ``stop`` is a graceful-shutdown seam for tests; production passes none.
     """
-    os.makedirs(os.path.dirname(socket_path) or ".", mode=0o700, exist_ok=True)
+    socket_dir = os.path.dirname(socket_path) or "."
+    os.makedirs(socket_dir, mode=0o700, exist_ok=True)
+    # `makedirs(..., mode=...)` only applies `mode` to a directory it actually
+    # CREATES — `exist_ok=True` silently accepts a pre-existing dir at ANY
+    # permission level, including world-writable (e.g. a shared /tmp subpath
+    # another local process claimed first). Enforce the mode unconditionally
+    # so a stale/attacker-seeded directory can't leave the socket reachable.
+    os.chmod(socket_dir, 0o700)
     with configure_plugins():
         redact_configured(
             "warm up the detect-secrets mapping cache", None, RedactorConfig()
         )
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        if not _bind_or_exit(sock, socket_path):
+        # `bind()` creates the socket file under the process's current umask;
+        # narrow the window between file creation and the explicit chmod below
+        # by restricting the umask for the bind call itself, so the socket is
+        # never briefly world/group-accessible on a permissive parent dir. The
+        # protocol is unauthenticated, so a connectable-but-not-yet-restricted
+        # socket is a real local privilege issue, not just cosmetic.
+        old_umask = os.umask(0o077)
+        try:
+            bound = _bind_or_exit(sock, socket_path)
+        finally:
+            os.umask(old_umask)
+        if not bound:
             sock.close()
             return
         try:
-            os.chmod(socket_path, 0o600)
+            os.chmod(socket_path, 0o600)  # defense-in-depth; harmless if redundant
             sock.listen(64)
             sock.settimeout(0.5)
             while not (stop is not None and stop.is_set()):

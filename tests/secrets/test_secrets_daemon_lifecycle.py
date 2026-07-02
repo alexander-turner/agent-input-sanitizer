@@ -167,6 +167,29 @@ def test_serve_creates_socket_dir_with_mode(sock_dir):
         thread.join(timeout=5)
 
 
+def test_serve_tightens_preexisting_loose_socket_dir(sock_dir):
+    # `os.makedirs(..., mode=0o700, exist_ok=True)` only applies `mode` to a
+    # directory it actually CREATES — a dir another (possibly untrusted) local
+    # process pre-created at a looser mode is accepted as-is. Simulate that by
+    # loosening the already-existing sock_dir before the daemon starts, then
+    # assert serve() unconditionally tightens it back to 0o700.
+    os.chmod(sock_dir, 0o777)
+    assert oct(os.stat(sock_dir).st_mode)[-3:] == "777"
+    socket_path = str(sock_dir / "s.sock")
+    stop = threading.Event()
+    thread = threading.Thread(target=S.serve, args=(socket_path, stop), daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not Path(socket_path).exists() and time.time() < deadline:
+        time.sleep(0.02)
+    try:
+        assert Path(socket_path).exists()
+        assert oct(os.stat(sock_dir).st_mode)[-3:] == "700"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
 # ─── Per-connection timeout (DoS on a stalled peer) ──────────────────────────
 
 
