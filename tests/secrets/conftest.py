@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from tests._helpers import REPO_ROOT
+
 # The distribution package lives under python/; put it on the path so
 # `import agent_input_sanitizer.secrets` resolves to the working tree. The
 # engine import in the fixture below (and in redactor_helpers) depends on this.
-_PKG = Path(__file__).resolve().parents[2] / "python"
+_PKG = REPO_ROOT / "python"
 if str(_PKG) not in sys.path:
     sys.path.insert(0, str(_PKG))
 

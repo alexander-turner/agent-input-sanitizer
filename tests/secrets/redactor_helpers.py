@@ -11,9 +11,11 @@ import json
 import sys
 from pathlib import Path
 
+from tests._helpers import REPO_ROOT
+
 # The distribution package lives under python/; put it on the path so
 # `import agent_input_sanitizer.secrets` resolves to the working tree.
-_PKG = Path(__file__).resolve().parents[2] / "python"
+_PKG = REPO_ROOT / "python"
 if str(_PKG) not in sys.path:
     sys.path.insert(0, str(_PKG))
 
