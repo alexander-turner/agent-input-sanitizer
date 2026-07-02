@@ -173,6 +173,49 @@ describe("sanitize: html=false leaves HTML untouched", () => {
   });
 });
 
+// ─── options robustness / text type validation (facade contract) ────────────
+
+describe("sanitize: options robustness and text-type validation", () => {
+  it("treats an explicit null options the same as omitted (regression: destructuring null threw TypeError)", async () => {
+    const withNull = await sanitize("x", null);
+    const omitted = await sanitize("x");
+    assert.deepEqual(withNull, omitted);
+    assert.equal(withNull.cleaned, "x");
+  });
+
+  it("treats an explicit undefined options the same as omitted", async () => {
+    const withUndefined = await sanitize("x", undefined);
+    const omitted = await sanitize("x");
+    assert.deepEqual(withUndefined, omitted);
+  });
+
+  it("still honors options when a real options object is passed alongside null-safety", async () => {
+    const out = await sanitize("before <!-- hidden --> after", { html: true });
+    assert.doesNotMatch(out.cleaned, /hidden/);
+  });
+
+  it("throws a clear, named TypeError when text is not a string (regression: was an internal TypeError from deep inside applyLayer1)", async () => {
+    await assert.rejects(
+      () => sanitize(42),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /text must be a string/);
+        return true;
+      },
+    );
+  });
+
+  it("throws the same clear TypeError for other non-string text shapes", async () => {
+    for (const badText of [null, undefined, {}, [], true]) {
+      await assert.rejects(
+        () => sanitize(badText),
+        (err) =>
+          err instanceof TypeError && /text must be a string/.test(err.message),
+      );
+    }
+  });
+});
+
 describe("sanitize: html=true runs Layers 2 & 3", () => {
   it("splices a hidden element and an HTML comment, reporting both", async () => {
     const out = await sanitize("x <!-- c --> y <span hidden>SECRET</span> z", {

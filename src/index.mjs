@@ -79,13 +79,21 @@ function describeWarned(warned) {
  * its own removal.
  *
  * `found` names the categories neutralized; `warnings` carries the
- * operator-facing notices. `cleaned` is always a string, never throws, and
- * changes only carry a warning (no silent suppression).
+ * operator-facing notices. `cleaned` is always a string, and a change only
+ * ever carries a warning (no silent suppression). `options` is optional and
+ * tolerates an explicit `null`/`undefined` (treated the same as omitted) —
+ * only a genuinely malformed `text` (not a string) throws, deliberately: a
+ * caller passing the wrong TYPE for `text` gets a clear, named error instead
+ * of an internal TypeError leaking implementation details (or a silent, wrong
+ * coercion of e.g. a number to a string).
  * @param {string} text
- * @param {{ html?: boolean }} [options]
+ * @param {{ html?: boolean } | null} [options]
  * @returns {Promise<{ cleaned: string, found: string[], warnings: string[] }>}
  */
-export async function sanitize(text, { html = false } = {}) {
+export async function sanitize(text, options) {
+  if (typeof text !== "string")
+    throw new TypeError("sanitize(text, options): text must be a string");
+  const { html = false } = options ?? {};
   /** @type {string[]} */ const found = [];
   /** @type {string[]} */ const warnings = [];
 
@@ -105,7 +113,22 @@ export async function sanitize(text, { html = false } = {}) {
 
   if (!html) return { cleaned, found, warnings };
 
-  const { sanitizeHtml, detectExfil } = await import("./html.mjs");
+  let sanitizeHtml, detectExfil;
+  /* c8 ignore start -- a rejected dynamic import of a module that ships in
+     this very package (not an optional peer dep) requires corrupting
+     node_modules or the filesystem to trigger; there's no clean way to force
+     this from a test without fragile module-loader mocking (Node's
+     mock.module needs --experimental-test-module-mocks, which isn't wired
+     into this repo's test script). Fail loudly with context if it ever fires. */
+  try {
+    ({ sanitizeHtml, detectExfil } = await import("./html.mjs"));
+  } catch (importErr) {
+    throw new Error(
+      "sanitize: failed to load HTML module (is the optional HTML dependency installed?)",
+      { cause: importErr },
+    );
+  }
+  /* c8 ignore stop */
   // Scan for exfil URLs on the text BEFORE Layer 2 splices anything out — a
   // beacon URL hidden in a comment or hidden element is more suspicious, not
   // less, yet Layer 2 would otherwise remove it from view before the scan.

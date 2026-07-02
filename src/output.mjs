@@ -19,6 +19,10 @@
  * verbatim spans to delete (never replacement text), so even a compromised
  * filter can at most remove legitimate content — it can never inject new bytes
  * into the model's view. A consumer running a live LLM filter wires it here.
+ * Because a span deletion joins the bytes on either side of the deleted span,
+ * Layer 4 (`redact`) is re-run on the post-deletion text whenever Layer 5
+ * actually removes something, so a secret that a deletion reconstitutes is
+ * still caught before this function returns.
  */
 import { CATEGORY, describeStripped, isSgrOnly } from "./invisible.mjs";
 import { HTML_TAG_PRESENT, MD_LINK_HINT } from "./gates.mjs";
@@ -44,6 +48,33 @@ function errMessage(err) {
  *   Layer-5 result: verbatim spans to delete (the only mutation a filter may
  *   request) and/or a warning. Null means the filter made no finding.
  */
+
+/**
+ * Re-run Layer 4 (`redact`) on `text` and fold a finding into `warnings`,
+ * mirroring the first Layer-4 call's fail-closed behavior. Used after Layer 5
+ * deletes a span, since joining the bytes on either side of a deleted span can
+ * reconstitute a secret the first redaction pass never saw intact.
+ * @param {string} text
+ * @param {(text: string) => Promise<RedactResult|null> | (RedactResult|null)} redact
+ * @param {string[]} warnings
+ * @returns {Promise<string>}
+ */
+async function reRedactAfterSpanDeletion(text, redact, warnings) {
+  try {
+    const secrets = await redact(text);
+    if (!secrets) return text;
+    warnings.push(
+      `API keys/secrets redacted: ${secrets.found.join(", ")}${secrets.note ?? ""}`,
+    );
+    return secrets.text;
+  } catch (l4err) {
+    throw new Error(
+      `CRITICAL: secret redaction failed (${errMessage(l4err)}). ` +
+        "Failing closed — tool output suppressed.",
+      { cause: l4err },
+    );
+  }
+}
 
 /**
  * @param {string} text
@@ -203,16 +234,18 @@ async function applyMarkdownPipeline(inputText, { html, exfilScan }) {
  *   html?: boolean,
  *   exfilScan?: boolean,
  *   redact?: (text: string) => Promise<RedactResult|null> | (RedactResult|null),
- *   filterInjection?: (text: string) => Layer5Result | null,
+ *   filterInjection?: (text: string) => Promise<Layer5Result|null> | (Layer5Result|null),
  *   sgrCarveOut?: boolean,
  * }} SanitizeTextOptions
  */
 
 /**
  * Run the configured layers over a single text blob. Layer 1 always runs; the
- * rest are opt-in via `options`. Layer 4 (`redact`) is the only fail-closed
- * path: a redactor that throws is rethrown wrapped, so the caller suppresses
- * the output rather than emitting an unvetted value.
+ * rest are opt-in via `options`. Layer 4 (`redact`) is the fail-closed path: a
+ * redactor that throws is rethrown wrapped, so the caller suppresses the
+ * output rather than emitting an unvetted value. That fail-closed behavior
+ * also applies to Layer 4's re-scan after a Layer-5 span deletion (see Layer
+ * 5, below) — a redactor failure there fails the whole call closed too.
  * @param {string} text
  * @param {SanitizeTextOptions} [options]
  * @returns {Promise<{ cleaned: string, warnings: string[], modified: boolean, sgrNote: boolean }>}
@@ -266,9 +299,12 @@ export async function sanitizeText(text, options = {}) {
   }
 
   // Layer 5 — secure span-deletion slot (see module doc). A warning-only result
-  // flags without changing bytes; only a deleted span sets `modified`.
+  // flags without changing bytes; only a deleted span sets `modified`. Awaited
+  // so an async filter (e.g. a live second LLM, per the module doc) is actually
+  // run: calling it without `await` would silently no-op, since a Promise is
+  // always truthy but its `.removeSpans`/`.warning` are `undefined`.
   if (filterInjection) {
-    const res = filterInjection(cleaned);
+    const res = await filterInjection(cleaned);
     if (res) {
       if (res.removeSpans && res.removeSpans.length > 0) {
         const out = deleteVerbatimSpans(cleaned, res.removeSpans);
@@ -276,6 +312,17 @@ export async function sanitizeText(text, options = {}) {
           cleaned = out.text;
           modified = true;
           sgrNote = false;
+          // A span deletion joins the bytes on either side of it, which can
+          // reconstitute a secret Layer 4 never saw intact (it ran on the
+          // ORIGINAL text, before the join). Re-vet the post-deletion text so a
+          // compromised filter can still only ever REMOVE legitimate content,
+          // never smuggle an unvetted secret through by splicing around it.
+          if (redact)
+            cleaned = await reRedactAfterSpanDeletion(
+              cleaned,
+              redact,
+              warnings,
+            );
         }
       }
       if (res.warning) warnings.push(res.warning);
@@ -373,17 +420,23 @@ async function sanitizeValueAt(value, options, warnings, depth, seen) {
     // refuse to mangle it (precision), yet must not silently vouch for it on the
     // redactor path, so we pass it through UNCHANGED and FLAG it. Standard value
     // objects keep their data in internal slots with no own enumerable keys
-    // (Map/Set/Date/RegExp) or in a typed-array buffer of numbers (ArrayBuffer
-    // views) — no reachable text to sanitize — so they stay silent, avoiding the
-    // alert fatigue of flagging every benign Date.
+    // (Date/RegExp) or in a typed-array buffer of numbers (ArrayBuffer views) —
+    // no reachable text to sanitize — so they stay silent, avoiding the alert
+    // fatigue of flagging every benign Date. Map/Set are the exception: their
+    // data lives in `.entries()`/values, not own enumerable keys, so the
+    // `Object.keys` check below misses them entirely — flag any non-empty one
+    // by the same "unreachable, can't vouch for it" logic.
+    const isNonEmptyMapOrSet =
+      (value instanceof Map || value instanceof Set) && value.size > 0;
     if (
-      value !== null &&
-      typeof value === "object" &&
-      !ArrayBuffer.isView(value) &&
-      Object.keys(value).length > 0
+      isNonEmptyMapOrSet ||
+      (value !== null &&
+        typeof value === "object" &&
+        !ArrayBuffer.isView(value) &&
+        Object.keys(value).length > 0)
     )
       warnings.push(
-        "An object with a non-plain prototype (e.g. a class instance) in structured tool output was passed through unsanitized — its properties could not be walked without corrupting the object's shape",
+        "An object with a non-plain prototype (e.g. a class instance, Map, or Set) in structured tool output was passed through unsanitized — its properties could not be walked without corrupting the object's shape",
       );
     return { value, modified: false, sgrNote: false };
   }
@@ -432,13 +485,14 @@ async function sanitizeValueAt(value, options, warnings, depth, seen) {
       // field) or break a downstream schema that matches on the exact name, so
       // precision wins — we keep the original key and warn, letting an operator
       // decide, rather than mangle the object's shape. (A clean key is silent.)
+      // A key-only finding does NOT set `modified`: `modified` means output
+      // BYTES changed (see composeContext's contract), and the key is left
+      // intact here on purpose — only the warning fires.
       const { cleaned: cleanKey } = applyLayer1(key);
-      if (cleanKey !== key) {
-        modified = true;
+      if (cleanKey !== key)
         warnings.push(
           "An object key in structured tool output carried hidden/invisible characters (key left intact, value sanitized)",
         );
-      }
       const result = await sanitizeValueAt(
         item,
         options,
@@ -446,7 +500,17 @@ async function sanitizeValueAt(value, options, warnings, depth, seen) {
         depth + 1,
         seen,
       );
-      out[key] = result.value;
+      // Bracket assignment on a literal "__proto__" key triggers the special
+      // Object.prototype setter instead of creating an own property — the
+      // field would silently vanish from `out`'s own keys and `out`'s
+      // prototype would become attacker-controlled. defineProperty always
+      // creates a normal own data property regardless of the key's name.
+      Object.defineProperty(out, key, {
+        value: result.value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
       if (result.modified) modified = true;
       if (result.sgrNote) sgrNote = true;
     }
@@ -518,7 +582,15 @@ function suppressAt(value, message, depth, seen) {
     /** @type {Record<string, any>} */
     const out = {};
     for (const [key, item] of Object.entries(value))
-      out[key] = suppressAt(item, message, depth + 1, seen);
+      // See sanitizeValueAt's identical guard: bracket assignment on a literal
+      // "__proto__" key hits the special setter instead of creating an own
+      // property, silently dropping the field and mutating out's prototype.
+      Object.defineProperty(out, key, {
+        value: suppressAt(item, message, depth + 1, seen),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     return out;
   } finally {
     seen.delete(value);

@@ -499,6 +499,124 @@ describe("sanitizeText: Layer 5 filterInjection", () => {
     assert.equal(r.cleaned, "a BAD b");
     assert.equal(r.modified, false);
   });
+
+  it("awaits an ASYNC filterInjection (regression: calling without await made an async filter a silent no-op, since a Promise is truthy but its .removeSpans/.warning are undefined)", async () => {
+    const filterInjection = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return { removeSpans: ["BAD"], warning: "async filter fired" };
+    };
+    const r = await sanitizeText("a BAD b", { filterInjection });
+    assert.equal(r.cleaned, "a  b");
+    assert.equal(r.modified, true);
+    assert.deepEqual(r.warnings, ["async filter fired"]);
+  });
+});
+
+// ─── Layer 5 span deletion is re-vetted by Layer 4 (full pipeline) ───────────
+
+describe("sanitizeText: Layer 5 span deletion is re-vetted by Layer 4 (reconstitution)", () => {
+  // A realistic secret-shape check: "sk-live-" followed by EXACTLY 8 uppercase
+  // letters, not embedded in a longer run of uppercase letters. This is the
+  // kind of check a real redactor uses to avoid false positives on longer
+  // uppercase runs that merely CONTAIN a secret-shaped substring.
+  const SECRET_RE = /sk-live-[A-Z]{8}(?![A-Z])/g;
+  function redact(text) {
+    const found = [];
+    const redactedText = text.replace(SECRET_RE, () => {
+      found.push("api-key");
+      return "sk-live-[REDACTED]";
+    });
+    return found.length > 0 ? { text: redactedText, found } : null;
+  }
+
+  it("catches a secret that a Layer-5 span deletion reconstitutes (join re-vetted by Layer 4)", async () => {
+    // "sk-live-XXXAAAABBBB" is 11 uppercase letters after the prefix — the
+    // interposed "XXX" breaks the exact-8-letters shape, so the FIRST redact()
+    // pass (on the original text) finds nothing to redact.
+    const input = "key: sk-live-XXXAAAABBBB end";
+    const filterInjection = () => ({ removeSpans: ["XXX"] });
+    const r = await sanitizeText(input, { redact, filterInjection });
+    // Without the fix, deleting "XXX" joins the bytes into an intact secret
+    // ("sk-live-AAAABBBB") that Layer 4 never re-checks — it would leak here.
+    assert.equal(r.cleaned, "key: sk-live-[REDACTED] end");
+    assert.doesNotMatch(r.cleaned, /sk-live-AAAABBBB/);
+    assert.equal(r.modified, true);
+    assert.ok(
+      r.warnings.some((w) => /API keys\/secrets redacted: api-key/.test(w)),
+    );
+  });
+
+  it("re-runs redact after a span deletion but changes nothing when the re-scan also finds nothing", async () => {
+    let calls = 0;
+    const alwaysNullRedact = () => {
+      calls++;
+      return null;
+    };
+    const r = await sanitizeText("a BAD b", {
+      redact: alwaysNullRedact,
+      filterInjection: () => ({ removeSpans: ["BAD"] }),
+    });
+    assert.equal(calls, 2); // pre-Layer-5 pass + post-deletion re-scan
+    assert.equal(r.cleaned, "a  b"); // span deleted, nothing else changed
+    assert.equal(r.modified, true); // the deletion itself still counts
+    assert.deepEqual(r.warnings, []); // neither redact pass found anything
+  });
+
+  it("does not re-run redact when Layer 5 finds nothing to delete (no span present)", async () => {
+    let calls = 0;
+    const countingRedact = async () => {
+      calls++;
+      return null;
+    };
+    const r = await sanitizeText("clean docs", {
+      redact: countingRedact,
+      filterInjection: () => ({ removeSpans: ["NOT PRESENT"] }),
+    });
+    assert.equal(calls, 1); // only the first (pre-Layer-5) pass runs
+    assert.equal(r.cleaned, "clean docs");
+    assert.equal(r.modified, false);
+  });
+
+  it("fails closed when the re-scan redactor throws after a span deletion", async () => {
+    let call = 0;
+    const flakyRedact = () => {
+      call++;
+      if (call === 1) return null; // first pass: nothing found
+      throw new Error("engine down on re-scan");
+    };
+    await assert.rejects(
+      () =>
+        sanitizeText("a BAD b", {
+          redact: flakyRedact,
+          filterInjection: () => ({ removeSpans: ["BAD"] }),
+        }),
+      (err) => {
+        assert.match(err.message, /^CRITICAL: secret redaction failed/);
+        assert.match(err.message, /engine down on re-scan/);
+        return true;
+      },
+    );
+  });
+
+  it("calls redact exactly twice (pre- and post-deletion) when Layer 5 deletes a span", async () => {
+    const calls = [];
+    const redactSpy = (text) => {
+      calls.push(text);
+      const found = [];
+      const redactedText = text.replace(SECRET_RE, () => {
+        found.push("api-key");
+        return "sk-live-[REDACTED]";
+      });
+      return found.length > 0 ? { text: redactedText, found } : null;
+    };
+    const r = await sanitizeText("sk-live-XXXAAAABBBB", {
+      redact: redactSpy,
+      filterInjection: () => ({ removeSpans: ["XXX"] }),
+    });
+    assert.equal(calls.length, 2); // pre- and post-deletion passes
+    assert.equal(r.cleaned, "sk-live-[REDACTED]");
+    assert.deepEqual(r.warnings, ["API keys/secrets redacted: api-key"]);
+  });
 });
 
 // ─── sanitizeValue ───────────────────────────────────────────────────────────
@@ -584,6 +702,40 @@ describe("sanitizeValue", () => {
     assert.deepEqual(r.value, { a: "x", b: 1 });
     assert.equal(r.modified, false);
   });
+
+  it("does not lose a literal __proto__-named key (regression: bracket assignment on that key hits the special setter instead of creating an own property)", async () => {
+    const warnings = [];
+    const input = JSON.parse('{"__proto__": {"payload": "hi"}, "a": "b"}');
+    const r = await sanitizeValue(input, {}, warnings);
+    // The field survives as the rebuilt object's OWN key, not diverted into
+    // its prototype.
+    assert.deepEqual(Object.keys(r.value).sort(), ["__proto__", "a"]);
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(r.value, "__proto__").value,
+      {
+        payload: "hi",
+      },
+    );
+    assert.equal(r.value.a, "b");
+    // The rebuilt object's actual prototype is untouched (still Object.prototype),
+    // not attacker-controlled.
+    assert.equal(Object.getPrototypeOf(r.value), Object.prototype);
+  });
+
+  it("sanitizes a string leaf nested under a genuine own __proto__ key (JSON.parse input)", async () => {
+    const warnings = [];
+    // JSON.parse creates a genuine OWN "__proto__" property (unlike an object
+    // literal, which would divert it to the prototype at parse time) — this is
+    // exactly the shape a hostile/odd tool-output JSON payload can produce.
+    const input = JSON.parse(
+      `{"__proto__": {"note": "mal${ZW}ware"}, "marker": 1}`,
+    );
+    const r = await sanitizeValue(input, {}, warnings);
+    assert.deepEqual(Object.keys(r.value).sort(), ["__proto__", "marker"]);
+    assert.equal(r.value.__proto__.note, "malware"); // recursed into it
+    assert.equal(r.value.marker, 1);
+    assert.equal(r.modified, true);
+  });
 });
 
 // ─── sanitizeValue / suppressToolOutput: exotic objects are opaque leaves ────
@@ -602,15 +754,29 @@ function exoticSamples() {
   ];
 }
 
+// A non-empty Map/Set carries data that Object.keys can't see (it lives in
+// .entries()/values, not own enumerable keys), so — unlike Date/RegExp/typed
+// arrays, which genuinely have no reachable text — it must be FLAGGED, same as
+// a class instance: unreachable content we can't vouch for, not silently
+// passed through.
+const WARNING_EXOTICS = new Set(["Map", "Set"]);
+
 describe("sanitizeValue passes exotic objects through as opaque leaves", () => {
   for (const [name, exotic] of exoticSamples()) {
-    it(`preserves a bare ${name} unchanged (same reference, not modified)`, async () => {
+    const warns = WARNING_EXOTICS.has(name);
+
+    it(`preserves a bare ${name} unchanged (same reference, not modified)${warns ? ", flagging it" : ""}`, async () => {
       const warnings = [];
       const r = await sanitizeValue(exotic, {}, warnings);
       assert.equal(r.value, exotic); // identity: passed through, not rebuilt
       assert.equal(r.modified, false);
       assert.equal(r.sgrNote, false);
-      assert.deepEqual(warnings, []);
+      if (warns) {
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /non-plain prototype/);
+      } else {
+        assert.deepEqual(warnings, []);
+      }
     });
 
     it(`preserves a ${name} nested in a plain object, sanitizing sibling strings`, async () => {
@@ -626,6 +792,31 @@ describe("sanitizeValue passes exotic objects through as opaque leaves", () => {
       assert.equal(r.modified, true);
     });
   }
+
+  it("stays silent on an EMPTY Map (no reachable data, avoid alert fatigue)", async () => {
+    const warnings = [];
+    const r = await sanitizeValue(new Map(), {}, warnings);
+    assert.equal(r.modified, false);
+    assert.deepEqual(warnings, []);
+  });
+
+  it("stays silent on an EMPTY Set (no reachable data, avoid alert fatigue)", async () => {
+    const warnings = [];
+    const r = await sanitizeValue(new Set(), {}, warnings);
+    assert.equal(r.modified, false);
+    assert.deepEqual(warnings, []);
+  });
+
+  it("flags a non-empty Set nested beside sanitized siblings", async () => {
+    const warnings = [];
+    const r = await sanitizeValue(
+      { tags: new Set(["a"]), note: `mal${ZW}ware` },
+      {},
+      warnings,
+    );
+    assert.equal(r.value.note, "malware"); // sibling string sanitized
+    assert.ok(warnings.some((w) => /non-plain prototype/.test(w)));
+  });
 });
 
 // A class instance carries string data in OWN enumerable properties that
@@ -774,18 +965,35 @@ describe("sanitizeValue depth/cycle guard (R3)", () => {
 // ─── sanitizeValue: hidden chars in object KEYS (S5) ─────────────────────────
 
 describe("sanitizeValue key screening (S5)", () => {
-  it("flags a key carrying a ZWSP run + ESC, keeping the original key intact", async () => {
+  it("flags a key carrying a ZWSP run + ESC but leaves `modified` false when the VALUE is clean (key-only finding, no bytes changed)", async () => {
     const hiddenKey = `std${ZW.repeat(15)}${ESC}[31mout`;
     const warnings = [];
     const r = await sanitizeValue({ [hiddenKey]: "clean value" }, {}, warnings);
     // Key is NOT rewritten (precision: rewriting could collide / break schema).
     assert.deepEqual(Object.keys(r.value), [hiddenKey]);
     assert.equal(r.value[hiddenKey], "clean value");
-    assert.equal(r.modified, true);
+    // `modified` means output BYTES changed (composeContext's contract); a
+    // key-only finding changes nothing byte-wise, so it must stay false even
+    // though the finding is still flagged via warnings.
+    assert.equal(r.modified, false);
     assert.ok(
       warnings.some((w) => w.includes("object key") && w.includes("hidden")),
       "a key warning naming hidden chars is recorded",
     );
+  });
+
+  it("sets `modified` true when BOTH a key finding and a real value change occur together", async () => {
+    const hiddenKey = `std${ZW.repeat(15)}${ESC}[31mout`;
+    const warnings = [];
+    const r = await sanitizeValue(
+      { [hiddenKey]: `mal${ZW}ware` },
+      {},
+      warnings,
+    );
+    assert.deepEqual(Object.keys(r.value), [hiddenKey]);
+    assert.equal(r.value[hiddenKey], "malware"); // value WAS sanitized
+    assert.equal(r.modified, true); // real byte change on the value
+    assert.ok(warnings.some((w) => w.includes("object key")));
   });
 
   it("does not flag ordinary keys (negative: clean keys stay silent)", async () => {
@@ -865,5 +1073,14 @@ describe("suppressToolOutput", () => {
     node.self = node;
     const out = suppressToolOutput(node, MSG);
     assert.deepEqual(out, { a: MSG, self: MSG });
+  });
+
+  it("does not lose a literal __proto__-named key (regression: bracket assignment on that key hits the special setter)", () => {
+    const input = JSON.parse('{"__proto__": {"payload": "leak"}, "a": "leak"}');
+    const out = suppressToolOutput(input, MSG);
+    assert.deepEqual(Object.keys(out).sort(), ["__proto__", "a"]);
+    assert.equal(out.a, MSG);
+    assert.deepEqual(out.__proto__, { payload: MSG }); // recursed into it, own key preserved
+    assert.equal(Object.getPrototypeOf(out), Object.prototype); // not hijacked
   });
 });
