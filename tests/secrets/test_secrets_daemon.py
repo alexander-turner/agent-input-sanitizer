@@ -150,6 +150,7 @@ def test_daemon_web_ingress_flag(daemon):
     web = _client_request(daemon, {"text": text, "map": False, "web_ingress": True})
     assert local is None  # benign cursor kept for local output
     assert web is not None and "[REDACTED" in web["text"]
+    assert "abcdefghij1234567890XYZ" not in web["text"]
 
 
 def test_daemon_survives_malformed_frame_then_serves(daemon):

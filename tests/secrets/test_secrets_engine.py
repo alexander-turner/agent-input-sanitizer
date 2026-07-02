@@ -806,18 +806,31 @@ def test_credential_after_keyword_still_redacts():
 
 
 @pytest.mark.parametrize(
-    "label, text",
+    "label, text, secret_value",
     [
-        ("benign cursor", "next_token: abcdefghij1234567890XYZ"),
-        ("metadata field", 'secret_type = "q9X2mN7pK4rT8wY1cV5bZ3dF6gH0jL2e"'),
-        ("filesystem path", "secret=/run/monitor-secret:ro"),
+        (
+            "benign cursor",
+            "next_token: abcdefghij1234567890XYZ",
+            "abcdefghij1234567890XYZ",
+        ),
+        (
+            "metadata field",
+            'secret_type = "q9X2mN7pK4rT8wY1cV5bZ3dF6gH0jL2e"',
+            "q9X2mN7pK4rT8wY1cV5bZ3dF6gH0jL2e",
+        ),
+        (
+            "filesystem path",
+            "secret=/run/monitor-secret:ro",
+            "/run/monitor-secret:ro",
+        ),
     ],
 )
-def test_web_ingress_disables_relabelable_skips(label, text):
+def test_web_ingress_disables_relabelable_skips(label, text, secret_value):
     local, _ = redact(text, cfg(web_ingress=False))
     web, _ = redact(text, cfg(web_ingress=True))
     assert local == text, f"{label}: local output must be unchanged"
     assert "[REDACTED" in web and web != text, f"{label}: web ingress must redact"
+    assert secret_value not in web, f"{label}: web ingress must remove the secret value"
 
 
 def test_handle_request_web_ingress_flag_redacts():
@@ -871,6 +884,7 @@ def test_both_detectors_one_secret():
     result = run_plain(f'api_key = "{STRIPE_LIVE}"')
     assert result is not None
     assert "sk_live" not in result["text"]
+    assert "_4eC39HqLyjWDarjtT1zdp7dc" not in result["text"]
     assert result["text"].count("[REDACTED") >= 1
 
 

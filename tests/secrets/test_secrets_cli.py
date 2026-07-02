@@ -34,6 +34,7 @@ def test_cli_map_mode(monkeypatch):
 def test_cli_web_ingress_flag(monkeypatch):
     result = _run(["--web-ingress"], "next_token: abcdefghij1234567890XYZ", monkeypatch)
     assert result is not None and "[REDACTED" in result["text"]
+    assert "abcdefghij1234567890XYZ" not in result["text"]
 
 
 def test_cli_high_confidence_drops_keyword(monkeypatch):
