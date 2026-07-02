@@ -46,6 +46,8 @@ const BENIGN_URLS = [
   // Signed-CDN URL: long by design, every param allowlisted.
   "https://cdn.example.com/a.js?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20240101T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=" +
     "b".repeat(64),
+  // Percent-encoded but decodes to something short — must not flag.
+  "https://benignpct.example.com/p?q=%41%42%43",
 ];
 
 // Each exfil token is a genuine data-exfiltration shape with a UNIQUE host so
@@ -106,6 +108,13 @@ const EXFIL_URLS = [
     url: `https://kw.evil/p?token=${"Ab1".repeat(14)}`,
     reason: "suspicious query parameter",
     target: "kw.evil",
+  },
+  {
+    // Percent-encoded blob: the raw value is percent-escapes, not a blob
+    // shape, but decodes to a 40+ run of "A"s.
+    url: `https://pctblob.evil/log?q=${"%41".repeat(40)}`,
+    reason: "suspicious query parameter",
+    target: "pctblob.evil",
   },
 ];
 

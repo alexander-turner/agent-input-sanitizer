@@ -42,6 +42,16 @@ const KEEP_TOKENS = [
   '<div style="font-size: 12px; height: 40px">KEEPSIZED</div>',
   '<div style="text-indent: 2em">KEEPINDENT</div>',
   '<div style="overflow: hidden; height: 100px">KEEPOVERFLOW</div>',
+  // aria-hidden removes an element only from the ACCESSIBILITY TREE, not the
+  // rendered page — a sighted human still sees it, so it must survive.
+  '<p aria-hidden="true">KEEPARIA</p>',
+  // A zero width/height alone (no overflow:hidden) still shows overflowing
+  // content under the default overflow:visible.
+  '<div style="width: 0">KEEPZEROWIDTH</div>',
+  '<div style="height: 0">KEEPZEROHEIGHT</div>',
+  // A nonzero unitless offset is invalid CSS; a browser drops the whole
+  // declaration and the element keeps its normal on-screen position.
+  '<div style="position: absolute; left: -9999">KEEPUNITLESS</div>',
 ];
 
 // Each STRIP token is a genuinely hidden construct; its MARKER (the payload a
@@ -68,8 +78,20 @@ const STRIP_TOKENS = [
     marker: "STRIPFONTZERO",
   },
   {
-    t: '<p aria-hidden="true">STRIPARIA</p>',
-    marker: "STRIPARIA",
+    // A malformed sibling declaration must not blank detection of the valid
+    // `display:none` next to it (per-declaration salvage bypass fix).
+    t: '<div style="x;display:none">STRIPMALFORMED</div>',
+    marker: "STRIPMALFORMED",
+  },
+  {
+    // A CSS hex-escaped keyword decodes to `none` in a real browser.
+    t: '<div style="display:no\\6e e">STRIPESCAPED</div>',
+    marker: "STRIPESCAPED",
+  },
+  {
+    // A zero box paired with overflow:hidden hides its content.
+    t: '<div style="overflow:hidden;width:0">STRIPOVERFLOWZERO</div>',
+    marker: "STRIPOVERFLOWZERO",
   },
 ];
 

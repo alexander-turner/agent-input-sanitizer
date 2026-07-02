@@ -70,8 +70,15 @@ const OFFSCREEN_VIEWPORT_THRESHOLD = -100;
 // The numeric arm accepts a sign and scientific notation (`-1e4px`) so a
 // browser-honored exponent form is read at its true magnitude, not truncated
 // at the `e` (which would make `translateX(-1e4px)` read as `-1px`, on-screen).
+// The unit is MANDATORY: per the CSS spec a nonzero unitless length is an
+// INVALID declaration and a browser drops it entirely (the element keeps its
+// normal on-screen position), so an optional unit here would read
+// `left:-1000` as offscreen and splice content a browser still renders. A
+// bare unitless `0` also fails this regex now, but that's inert — 0 never
+// clears the negative offscreen threshold below, so it was never flagged
+// either way.
 const ABSOLUTE_UNIT_RE =
-  /^[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\s*(?:px|em|rem|ex|ch|pt|pc|in|cm|mm)?$/;
+  /^[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\s*(?:px|em|rem|ex|ch|pt|pc|in|cm|mm)$/;
 const VIEWPORT_UNIT_RE =
   /^[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\s*(?:vw|vh|vmin|vmax|%)$/;
 
@@ -228,20 +235,82 @@ function isOverflowHidden(val) {
 }
 
 /**
+ * Parse a style string into a property map, salvaging what we can when the
+ * whole string is syntactically invalid. `style-to-object` throws on the
+ * FIRST bad declaration and abandons the rest of the string, but a browser
+ * recovers per-declaration — it drops only the invalid one and keeps parsing
+ * and applying the others. Gating detection on "the whole string parsed
+ * cleanly" would let `x;display:none` hide content from a human (the browser
+ * drops the bogus `x` and applies `display:none`) while going undetected
+ * here — a splice bypass. So on a whole-string parse failure, this re-parses
+ * each `;`-delimited declaration independently and keeps whichever ones
+ * parse; a declaration that still fails on its own is dropped, matching the
+ * browser's per-declaration recovery.
+ * @param {string} styleStr
+ * @returns {Record<string, unknown> | null}
+ */
+function parseStyleSalvage(styleStr) {
+  try {
+    // @ts-ignore -- style-to-object default export not resolved under NodeNext
+    return styleToObject(styleStr);
+  } catch {
+    // Fall through to per-declaration salvage below.
+  }
+  /** @type {Record<string, unknown>} */
+  const salvaged = {};
+  let sawAny = false;
+  for (const decl of styleStr.split(";")) {
+    if (!decl.trim()) continue;
+    try {
+      // @ts-ignore -- see above
+      const parsed = styleToObject(decl);
+      if (parsed) {
+        Object.assign(salvaged, parsed);
+        sawAny = true;
+      }
+    } catch {
+      // This one declaration is invalid; a browser drops only it and keeps
+      // the rest, so skip it rather than failing the whole style.
+    }
+  }
+  return sawAny ? salvaged : null;
+}
+
+// CSS escape sequences (used in property VALUES, not just identifiers): a
+// backslash followed by 1-6 hex digits (with an optional single trailing
+// whitespace terminator that is consumed, not emitted) encodes a codepoint;
+// a backslash followed by any other character is that literal character. A
+// keyword can be spelled through this mechanism (`no\6e e` decodes to
+// `none`) and a real browser decodes it before matching the keyword, so
+// leaving it undecoded here is a detection bypass.
+const CSS_ESCAPE_RE = /\\([0-9a-fA-F]{1,6})[ \t\n]?|\\(.)/g;
+
+/** @param {string} value @returns {string} */
+function decodeCssEscapes(value) {
+  return value.replace(CSS_ESCAPE_RE, (_match, hex, char) => {
+    if (!hex) return char;
+    const codepoint = parseInt(hex, 16);
+    // Per the CSS syntax spec, an escaped codepoint of zero, a surrogate
+    // half, or anything past the Unicode maximum is invalid and decodes to
+    // U+FFFD REPLACEMENT CHARACTER — not the raw codepoint, which would
+    // throw in `String.fromCodePoint` (e.g. `\ffffff` > 0x10FFFF) and break
+    // this module's never-throws contract.
+    if (
+      codepoint === 0 ||
+      (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+      codepoint > 0x10ffff
+    )
+      return "\uFFFD";
+    return String.fromCodePoint(codepoint);
+  });
+}
+
+/**
  * @param {string} styleStr
  * @returns {boolean}
  */
 export function isHiddenStyle(styleStr) {
-  // style-to-object throws on syntactically invalid CSS; a browser would
-  // ignore the broken declaration, so we do too rather than letting the
-  // exception escape and suppress the entire tool output.
-  let rawProps;
-  try {
-    // @ts-ignore -- style-to-object default export not resolved under NodeNext
-    rawProps = styleToObject(styleStr);
-  } catch {
-    return false;
-  }
+  const rawProps = parseStyleSalvage(styleStr);
   if (!rawProps) return false;
 
   // CSS property names are case-insensitive and `!important` is a legal
@@ -258,8 +327,11 @@ export function isHiddenStyle(styleStr) {
     );
   }
 
+  // Values are CSS-escape-decoded before every keyword/length comparison
+  // below, so an escaped keyword (`no\6e e`) reads at its true decoded value.
   /** @param {string} key */
-  const val = (key) => (props[key] || "").toString().trim().toLowerCase();
+  const val = (key) =>
+    decodeCssEscapes((props[key] || "").toString().trim()).toLowerCase();
 
   if (val("display") === "none") return true;
   if (val("visibility") === "hidden" || val("visibility") === "collapse")
@@ -285,8 +357,13 @@ export function isHiddenStyle(styleStr) {
     if (n < NEAR_ZERO_EPSILON) return true;
   }
 
-  for (const dim of ["height", "width", "font-size"])
-    if (isNearZeroLength(val(dim))) return true;
+  // `height`/`width` are deliberately NOT tested standalone here: with the
+  // default `overflow:visible`, a zero-sized box still paints its overflowing
+  // children, so a bare `width:0`/`height:0` leaves content on screen.
+  // `isOverflowHidden` below already covers the case where a zero dimension
+  // DOES hide content — gated on `overflow:hidden` also being present.
+  // `font-size:0`, in contrast, reliably collapses text to nothing on its own.
+  if (isNearZeroLength(val("font-size"))) return true;
 
   if (isPositionedOffscreen(val)) return true;
 
@@ -372,10 +449,13 @@ export function isHiddenElement(node) {
   const { properties = {} } = node;
   if (properties.hidden !== undefined && properties.hidden !== null)
     return true;
-  // `aria-hidden="true"` removes the element from the accessibility tree, so a
-  // human using the rendered page never perceives it; a model reading raw
-  // source still does. (rehype maps the attribute to the `ariaHidden` prop.)
-  if (String(properties.ariaHidden).toLowerCase() === "true") return true;
+  // `aria-hidden="true"` is deliberately NOT treated as a hiding signal: it
+  // removes the element only from the ACCESSIBILITY TREE, not the rendered
+  // page — a sighted human viewing the page still sees it (it's routinely
+  // used on decorative icons and icon-font glyphs, and on visible text
+  // duplicated for screen-reader dedup). Splicing on it would delete content
+  // a human plainly sees, which is real harm under the precision-over-recall
+  // doctrine for this layer.
   if (properties.style && isHiddenStyle(properties.style)) return true;
   return false;
 }
@@ -952,6 +1032,39 @@ function isBase64UrlBlob(value) {
   return BLOB_VALUE_B64URL_RE.test(value) && B64URL_RUN_RE.test(value);
 }
 
+/** @param {string} value @returns {boolean} */
+function isBlobValue(value) {
+  return (
+    BLOB_VALUE_B64_RE.test(value) ||
+    BLOB_VALUE_HEX_RE.test(value) ||
+    isBase64UrlBlob(value)
+  );
+}
+
+/**
+ * True when the percent-DECODED form of `value` is blob-shaped, even though
+ * the raw value isn't (e.g. `A%41A%41…` decodes to a run of `A`s). This is a
+ * REPORT-ONLY check — `paramExfilReason` never rewrites the URL, it only
+ * names a reason for the caller's warning — so the false-positive cost of
+ * decoding is much lower than it would be in the splicing layer. Applied IN
+ * ADDITION to the raw-value test (never instead of it): the raw scan stays
+ * the primary signal since `URLSearchParams`-style decoding elsewhere in this
+ * file is deliberately avoided (it mangles `+` in base64). A malformed
+ * percent-sequence throws in `decodeURIComponent`; that failure is not a
+ * blob shape either way, so it fails open (skip the decoded check).
+ * @param {string} value
+ * @returns {boolean}
+ */
+function decodedBlobMatch(value) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return false;
+  }
+  return isBlobValue(decoded);
+}
+
 /**
  * RAW (un-decoded) `name=value` pairs of a query/fragment string, split on `&`
  * and `;`. URLSearchParams is avoided on purpose: it percent-/`+`-decodes
@@ -990,11 +1103,7 @@ function paramExfilReason(name, value) {
     matchesSecretHint(value)
   )
     return "credential-shaped token in URL parameter";
-  if (
-    BLOB_VALUE_B64_RE.test(value) ||
-    BLOB_VALUE_HEX_RE.test(value) ||
-    isBase64UrlBlob(value)
-  )
+  if (isBlobValue(value) || decodedBlobMatch(value))
     return "suspicious query parameter";
   return null;
 }

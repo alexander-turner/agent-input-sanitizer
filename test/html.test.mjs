@@ -61,8 +61,14 @@ const HIDDEN_STYLE_CASES = [
   ["opacity:0px", false], // invalid unit — a browser ignores it, element stays visible
   ["opacity:0em", false], // invalid unit — fail open (was parseFloat'd to 0 → over-flagged)
   // ── zero / near-zero size (epsilon) ──
-  ["height:0", true],
-  ["width:0", true],
+  // `height`/`width` alone (no `overflow:hidden`) are deliberately NOT
+  // standalone-hidden: the default `overflow:visible` still paints
+  // overflowing children, so the element stays visible (precision fix).
+  ["height:0", false],
+  ["width:0", false],
+  ["overflow:hidden;height:0", true], // zero box + overflow:hidden together hide
+  ["overflow:hidden;width:0", true],
+  ["overflow:visible;height:0", false], // explicit visible overflow: not hidden
   ["font-size:0", true],
   ["font-size:0.0001px", true], // sub-epsilon (bug: required exact 0)
   ["font-size:0.005em", true],
@@ -93,12 +99,15 @@ const HIDDEN_STYLE_CASES = [
   ["position:static;left:-9999px", false],
   ["position:absolute;left:auto", false], // non-length offset is not offscreen
   ["position:absolute;clip:rect(1,1,1,1)", false],
+  ["position:absolute;left:-1000", false], // unitless nonzero length is INVALID CSS; browser drops it, fails open
+  ["position:absolute;left:-9999", false], // same, larger magnitude
   // ── text-indent offscreen ──
   ["text-indent:-9999px", true],
   ["text-indent:-100vw", true],
   ["text-indent:-900px", false],
   ["text-indent:-0.5em", false], // ordinary hanging indent is not offscreen
   ["text-indent:calc(2em - 1px)", false], // calc indent fails open
+  ["text-indent:-9999", false], // unitless nonzero — invalid CSS, fails open (was over-flagged)
   // ── overflow + zero box ──
   ["overflow:hidden;max-width:0", true],
   ["overflow:hidden;max-height:0", true],
@@ -181,6 +190,20 @@ const HIDDEN_STYLE_CASES = [
   // ── degenerate / invalid input ──
   ["", false],
   ["a{b:c}", false],
+  // ── per-declaration salvage on parse failure ──
+  ["x;display:none", true], // one invalid decl must not blank the whole style (bypass fix)
+  ["display:none;x", true], // invalid decl trailing the valid one is salvaged too
+  ["bad!!!;color:red", false], // salvage must not manufacture a false positive
+  ["bad!!!;x also bad", false], // no declaration salvages at all — fails open
+  // ── CSS-escaped keyword decoding ──
+  ["display:no\\6e e", true], // `\6e` decodes to 'n' + space terminator consumed
+  ["display:\\64 isplay-never-a-real-value", false], // decodes to a nonsense keyword, stays visible
+  ["display:\\62 lock", false], // `\62` decodes to 'b' -> "block", correctly visible after decode
+  ["visibility:hi\\64 den", true], // `\64` decodes to 'd' -> "hidden"
+  // ── invalid escaped codepoints (spec: decode to U+FFFD, never throw) ──
+  ["display:\\0", false], // codepoint 0 is invalid
+  ["display:\\d800", false], // a surrogate half is invalid
+  ["display:\\ffffff", false], // past the Unicode maximum (0x10FFFF)
 ];
 
 describe("unit: isHiddenStyle exact verdicts", () => {
@@ -215,12 +238,24 @@ describe("unit: isHiddenElement exact verdicts", () => {
     assert.equal(isHiddenElement(elem("div", { hidden: "" })), true));
   it("does not flag hidden=null (the !== null half of the guard)", () =>
     assert.equal(isHiddenElement(elem("div", { hidden: null })), false));
-  it("flags aria-hidden=true (removed from the accessibility tree)", () =>
-    assert.equal(isHiddenElement(elem("span", { ariaHidden: "true" })), true));
+  // aria-hidden removes an element only from the ACCESSIBILITY TREE — a
+  // sighted human viewing the page still sees it (decorative icons,
+  // icon-font glyphs, visible text duplicated for screen-reader dedup).
+  // Splicing on it would delete content a human plainly sees, so it is
+  // deliberately NOT a hiding signal here (precision fix).
+  it("does not flag aria-hidden=true (visible on the rendered page)", () =>
+    assert.equal(isHiddenElement(elem("span", { ariaHidden: "true" })), false));
   it("does not flag aria-hidden=false", () =>
     assert.equal(
       isHiddenElement(elem("span", { ariaHidden: "false" })),
       false,
+    ));
+  it("still flags aria-hidden=true when it ALSO carries a real hiding style", () =>
+    assert.equal(
+      isHiddenElement(
+        elem("span", { ariaHidden: "true", style: "display:none" }),
+      ),
+      true,
     ));
   it("flags a hiding inline style", () =>
     assert.equal(
@@ -1013,7 +1048,6 @@ describe("property: hidden/bogus content is stripped on either branch (#2)", () 
     `<![CDATA[${CANARY}]]>`,
     `<span style="display:none">${CANARY}</span>`,
     `<div hidden>${CANARY}</div>`,
-    `<span aria-hidden="true">${CANARY}</span>`,
   );
 
   it("the canary never survives, the visible marker always does", () => {
@@ -1057,5 +1091,29 @@ describe("property: hidden/bogus content is stripped on either branch (#2)", () 
       sawSourceBranch > 0 && sawProseBranch > 0,
       "a branch was never exercised",
     );
+  });
+
+  // Precision counterpart: aria-hidden is visible on the rendered page (it
+  // only removes an element from the accessibility tree), so it must NOT be
+  // spliced on either branch — the opposite of the hiddenConstruct property
+  // above.
+  it("an aria-hidden-only construct survives byte-for-byte on either branch", () => {
+    const ariaConstruct = `<span aria-hidden="true">${CANARY}</span>`;
+    const sourceDoc = [
+      "<section>",
+      "<p>intro</p>",
+      `<p>${MARKER}</p>`,
+      ariaConstruct,
+      "<p>outro</p>",
+      "</section>",
+    ].join("\n");
+    const proseDoc = `Here is ${MARKER} then ${ariaConstruct} and more prose.`;
+    assert.equal(looksLikeHtmlSource(sourceDoc), true);
+    assert.equal(looksLikeHtmlSource(proseDoc), false);
+    for (const doc of [sourceDoc, proseDoc]) {
+      const out = applyHtml(doc);
+      assert.ok(out.includes(CANARY), `aria-hidden content spliced: ${doc}`);
+      assert.ok(out.includes(MARKER), `visible marker lost: ${doc}`);
+    }
   });
 });

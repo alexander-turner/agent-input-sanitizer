@@ -102,12 +102,20 @@ const CORPUS = {
       name: "black-on-black-shorthand",
       input: hidden("color:#000;background:rgb(0,0,0) url(x)"),
     },
-    {
-      name: "aria-hidden-span",
-      input: `<span aria-hidden="true">${CANARY}</span>`,
-    },
     { name: "html-comment", input: `text<!-- ${CANARY} -->OK` },
     { name: "bare-hidden-attr", input: `<div hidden>${CANARY}</div>` },
+    {
+      // A malformed sibling declaration (`x`, no colon) must not blank
+      // detection of the valid `display:none` next to it — a browser
+      // recovers per-declaration and still hides the element.
+      name: "malformed-decl-does-not-block-detection",
+      input: hidden("x;display:none"),
+    },
+    {
+      // A CSS hex-escaped keyword decodes to `none` in a real browser.
+      name: "css-escaped-display-none",
+      input: hidden("display:no\\6e e"),
+    },
     {
       name: "hidden-span-in-heading",
       input: `# Title <span style="display:none">${CANARY}</span> end`,
@@ -334,6 +342,13 @@ const CORPUS = {
       input: `https://evil.example/${"Zm9vQmFyMTIz".repeat(11)}-_`,
       reason: "encoded data blob in path segment",
     },
+    {
+      // Percent-encoded blob: the raw value is percent-escapes, not a blob
+      // shape, but it decodes to a 40+ run of "A"s.
+      name: "percent-encoded-blob",
+      input: "https://evil.example/log?q=" + "%41".repeat(40),
+      reason: "suspicious query parameter",
+    },
   ],
   urlBenign: [
     { name: "fragment-anchor", input: "https://ok.example/page#section-2" },
@@ -372,6 +387,16 @@ const CORPUS = {
     {
       name: "long-hyphenated-slug",
       input: "https://ok.example/the-" + "quick-".repeat(40) + "end",
+    },
+    {
+      // Percent-encoded but decodes to something short — must not flag.
+      name: "percent-encoded-short",
+      input: "https://ok.example/p?q=%41%42%43",
+    },
+    {
+      // Malformed percent-sequence: decodeURIComponent throws — fail open.
+      name: "malformed-percent-sequence",
+      input: "https://ok.example/p?q=%zzinvalid",
     },
     // S4 precision: legit url-safe shapes must NOT be mistaken for a blob.
     {
@@ -441,6 +466,39 @@ const CORPUS = {
       input: hidden("color:white;background:#fefefe"),
     },
     { name: "distinct-grays", input: hidden("color:#777;background:#888") },
+    {
+      // aria-hidden removes an element only from the ACCESSIBILITY TREE, not
+      // the rendered page — a sighted human still sees it.
+      name: "aria-hidden-span",
+      input: `<span aria-hidden="true">${CANARY}</span>`,
+    },
+    {
+      // A zero width/height with the default overflow:visible still paints
+      // overflowing children — content stays on screen.
+      name: "zero-height-no-overflow",
+      input: hidden("height:0"),
+    },
+    {
+      name: "zero-width-no-overflow",
+      input: hidden("width:0"),
+    },
+    {
+      // A nonzero unitless length is INVALID CSS; a browser drops the whole
+      // declaration and the element keeps its normal on-screen position.
+      name: "unitless-offscreen-invalid",
+      input: hidden("position:absolute;left:-9999"),
+    },
+    {
+      name: "unitless-text-indent-invalid",
+      input: hidden("text-indent:-9999"),
+    },
+    {
+      // A malformed declaration (`x`) in a style string must not blank
+      // detection of the REST of the style — but salvage also must not
+      // manufacture a false positive out of the broken half.
+      name: "malformed-decl-does-not-poison-valid-sibling",
+      input: hidden("bad!!!;color:red"),
+    },
   ],
 };
 

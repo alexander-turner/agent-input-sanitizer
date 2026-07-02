@@ -137,12 +137,15 @@ const hidingDeclarations = {
     .tuple(casedPropertyName("text-indent"), offscreenLength)
     .map(([name, length]) => `${name}: ${length}`),
 };
-for (const dimension of ["height", "width", "font-size"]) {
-  hidingDeclarations[dimension] = fc
-    .tuple(casedPropertyName(dimension), zeroLength)
-    .map(([name, length]) => `${name}: ${length}`);
-}
-for (const dimension of ["height", "max-width"]) {
+// `font-size:0` reliably collapses text to nothing on its own, so it stays a
+// standalone hiding signal. `height`/`width` are deliberately NOT standalone
+// here — with the default `overflow:visible` a zero-sized box still paints
+// its overflowing children — so they only flag paired with `overflow:hidden`
+// in the loop below (precision fix).
+hidingDeclarations["font-size"] = fc
+  .tuple(casedPropertyName("font-size"), zeroLength)
+  .map(([name, length]) => `${name}: ${length}`);
+for (const dimension of ["height", "width", "max-height", "max-width"]) {
   hidingDeclarations[`overflow+${dimension}`] = fc
     .tuple(
       casedPropertyName("overflow"),
@@ -188,6 +191,10 @@ const visibleDeclaration = fc.constantFrom(
   "position: absolute; left: -50%",
   "position: absolute; left: -10%",
   "position: absolute; left: calc(100% - 5px)",
+  "position: absolute; left: -9999", // unitless nonzero length is invalid CSS, fails open
+  "text-indent: -9999", // same, unitless
+  "height: 0", // zero box alone (no overflow:hidden) still shows overflowing children
+  "width: 0",
   "margin-left: -2em",
   "text-indent: -0.5em",
   "clip-path: inset(10%)",
