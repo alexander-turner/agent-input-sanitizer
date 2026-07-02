@@ -165,3 +165,46 @@ def test_serve_creates_socket_dir_with_mode(sock_dir):
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+# ─── Per-connection timeout (DoS on a stalled peer) ──────────────────────────
+
+
+def test_stalled_connection_does_not_block_the_daemon(sock_dir, monkeypatch):
+    # A client that connects and sends only PART of the 4-byte length header
+    # must not wedge `_serve_one` — and thus the whole single-threaded accept
+    # loop — forever. Shrink the per-connection timeout so the test is fast
+    # while still exercising the real bound (unbounded before the fix).
+    monkeypatch.setattr(S, "CONN_TIMEOUT_SECONDS", 0.5)
+    socket_path = str(sock_dir / "s.sock")
+    stop = threading.Event()
+    thread = threading.Thread(target=S.serve, args=(socket_path, stop), daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not Path(socket_path).exists() and time.time() < deadline:
+        time.sleep(0.02)
+    assert Path(socket_path).exists()
+    stalled = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fresh = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        stalled.connect(socket_path)
+        stalled.sendall(b"\x00\x00")  # 2 of 4 header bytes; never sends the rest
+
+        fresh.connect(socket_path)
+        body = json.dumps({"text": "key: AKIAIOSFODNN7EXAMPLE", "map": False}).encode(
+            "utf-8"
+        )
+        fresh.sendall(struct.pack(">I", len(body)) + body)
+        fresh.settimeout(5)
+        start = time.time()
+        result = _drain(fresh)
+        elapsed = time.time() - start
+        assert "AWS Access Key" in result["found"]
+        # Bounded by roughly CONN_TIMEOUT_SECONDS (the stalled connection ahead
+        # of it in accept order), never by an unbounded hang.
+        assert elapsed < 3, f"a stalled peer must not block a fresh request ({elapsed}s)"
+    finally:
+        stalled.close()
+        fresh.close()
+        stop.set()
+        thread.join(timeout=5)

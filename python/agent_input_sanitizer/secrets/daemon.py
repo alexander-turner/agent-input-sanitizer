@@ -32,6 +32,18 @@ from .engine import redact_configured
 # (the cap *boundary* is what matters).
 FRAME_CAP = 16 * 1024 * 1024
 
+# Bound on a single ACCEPTED connection's I/O. The listen socket's own
+# `settimeout` only governs how often `accept()` re-checks `stop` — it does
+# nothing once a connection is accepted, and `_serve_one` is called inline in
+# the same accept-loop iteration. Without this, a client that opens a
+# connection and never finishes sending its frame (e.g. 3 of 4 header bytes)
+# blocks `_recv_exact` forever, which blocks the entire accept loop from ever
+# calling `accept()` again — one idle/slow/malicious local client wedges the
+# daemon for every other client sharing the socket. Long enough for a
+# legitimate large request over a local socket, short enough to bound the DoS
+# window.
+CONN_TIMEOUT_SECONDS = 10.0
+
 
 def _recv_exact(conn: socket.socket, n: int) -> bytes | None:
     """Read exactly ``n`` bytes, or None if the peer closed/reset mid-frame."""
@@ -177,6 +189,10 @@ def serve(socket_path: str, stop: threading.Event | None = None) -> None:
                     conn, _ = sock.accept()
                 except TimeoutError:
                     continue
+                # Bound THIS connection's I/O; see CONN_TIMEOUT_SECONDS docstring.
+                # `_serve_one` is called inline (synchronously) below, so without
+                # this a stalled peer wedges the whole accept loop.
+                conn.settimeout(CONN_TIMEOUT_SECONDS)
                 _serve_one(conn)
         finally:
             sock.close()
